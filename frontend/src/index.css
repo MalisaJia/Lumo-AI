@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* Tailwind v4 dark mode class 策略 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 开始页渐入动画 */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.45s ease-out forwards;
+}
+
+/* 基础滚动条样式 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(0 0 0 / 0.2) transparent;
+}
+.dark * {
+  scrollbar-color: rgb(255 255 255 / 0.2) transparent;
+}
+
+/* KaTeX 公式溢出处理与暗色适配 */
+.markdown-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
+}
+
+/* 代码块内 hljs 背景交给外层容器控制 */
+.markdown-body pre code.hljs,
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
