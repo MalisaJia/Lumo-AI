@@ -27,6 +27,12 @@ export class ApiError extends Error {
   }
 }
 
+// 多用户模式：localStorage 存有 token 时统一附加 Authorization 头；无 token 时不加任何头
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('lumo_token')
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   let res: Response
   try {
@@ -34,6 +40,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       ...options,
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders(),
         ...(options.headers ?? {}),
       },
     })
@@ -108,7 +115,7 @@ export const uploadsApi = {
     form.append('file', file)
     let res: Response
     try {
-      res = await fetch('/api/uploads', { method: 'POST', body: form })
+      res = await fetch('/api/uploads', { method: 'POST', body: form, headers: authHeaders() })
     } catch {
       throw new ApiError(0, '网络请求失败，请检查后端服务是否已启动')
     }
@@ -174,7 +181,7 @@ export async function streamChat(
   try {
     res = await fetch('/api/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(params),
       signal,
     })

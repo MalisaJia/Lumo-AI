@@ -63,13 +63,23 @@ function SourcesPanel({ sources }: { sources: SourceRef[] }) {
   )
 }
 
-// 图片附件缩略图网格 + 点击全屏 lightbox（默认关闭，不引入新依赖）
+// 图片附件：缩略图网格 + 点击全屏 lightbox（默认关闭，不引入新依赖）；
+// 非图片附件：文件 chip（图标 + 文件名），点击新标签页打开
+const isImageAttachment = (a: Attachment) => (a.mimeType || '').startsWith('image/')
+
+const extOf = (name: string) => {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
+}
+
 function AttachmentGrid({ attachments }: { attachments: Attachment[] }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const images = attachments.filter(isImageAttachment)
+  const docs = attachments.filter((a) => !isImageAttachment(a))
   return (
     <>
       <div className="flex flex-wrap justify-end gap-1.5">
-        {attachments.map((a) => (
+        {images.map((a) => (
           <button key={a.id} onClick={() => setPreviewUrl(a.url)} title={a.fileName || '查看图片'}>
             <img
               src={a.url}
@@ -78,6 +88,33 @@ function AttachmentGrid({ attachments }: { attachments: Attachment[] }) {
               className="max-h-[200px] max-w-[200px] cursor-zoom-in rounded-xl border border-neutral-200 object-cover shadow-sm transition-opacity hover:opacity-90 dark:border-neutral-700"
             />
           </button>
+        ))}
+        {docs.map((a) => (
+          <a
+            key={a.id}
+            href={a.url}
+            target="_blank"
+            rel="noreferrer"
+            title={a.fileName || '打开附件'}
+            className="flex max-w-[220px] items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 shadow-sm transition-colors hover:border-violet-300 dark:border-neutral-700 dark:bg-neutral-800 dark:hover:border-violet-500/60"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              className="size-5 shrink-0 fill-none stroke-violet-500 dark:stroke-violet-400"
+              strokeWidth="1.6"
+            >
+              <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+              <path d="M14 3v5h5" />
+            </svg>
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate text-xs text-neutral-700 dark:text-neutral-200">
+                {a.fileName || '文件附件'}
+              </span>
+              <span className="text-[10px] text-neutral-400 uppercase">
+                {extOf(a.fileName) || '文件'}
+              </span>
+            </span>
+          </a>
         ))}
       </div>
       {previewUrl && (

@@ -24,6 +24,7 @@ from app.core.config import BACKEND_DIR
 from app.core.crypto import decrypt_key
 from app.models import Conversation, Memory, Message, Model, Provider
 from app.modules.conversations import service as conv_service
+from app.modules.uploads import extractor
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ class ChatContext:
     """贯穿整条管线的上下文对象。"""
 
     conversation_id: str
+    # 数据归属用户；管线自建 session，必须由路由层显式传入
+    user_id: str
     user_message: str = ""
     provider_id: str | None = None
     model_name: str | None = None
@@ -92,7 +95,7 @@ class ChatPipeline:
         （未来在此之后挂载 memory：长期记忆检索/摘要压缩）
         """
         conversation = await conv_service.get_conversation(
-            self.session, ctx.conversation_id
+            self.session, ctx.conversation_id, ctx.user_id
         )
         if conversation is None:
             raise PipelineError("会话不存在")
@@ -122,13 +125,14 @@ class ChatPipeline:
             # 局部导入避免循环依赖（memory.service -> search.service -> 本模块）
             from app.modules.memory import service as memory_service
 
-            if await memory_service.is_memory_enabled(self.session):
+            if await memory_service.is_memory_enabled(self.session, ctx.user_id):
                 # 存在多行 summary（旧行被停用后新建）时取最近更新的一行
                 summary_row = (
                     (
                         await self.session.execute(
                             select(Memory)
                             .where(
+                                Memory.user_id == ctx.user_id,
                                 Memory.source_conversation_id == ctx.conversation_id,
                                 Memory.memory_type == "summary",
                                 Memory.is_enabled.is_(True),
@@ -173,20 +177,30 @@ class ChatPipeline:
         if ctx.provider_id:
             provider = (
                 await self.session.execute(
-                    select(Provider).where(Provider.id == ctx.provider_id)
+                    select(Provider).where(
+                        Provider.id == ctx.provider_id,
+                        Provider.user_id == ctx.user_id,
+                    )
                 )
             ).scalar_one_or_none()
         if provider is None:
-            # 缺省：默认 Provider，否则第一个
+            # 缺省：当前用户的默认 Provider，否则第一个
             provider = (
                 await self.session.execute(
                     select(Provider)
+                    .where(Provider.user_id == ctx.user_id)
                     .order_by(Provider.is_default.desc(), Provider.created_at)
                     .limit(1)
                 )
             ).scalar_one_or_none()
         if provider is None:
             raise PipelineError("尚未配置任何模型服务商，请先在设置中添加")
+
+        # 智能选模哨兵："auto" 先归零走默认模型兑底，
+        # 任务感知选择在 Key 解密后进行（LLM 分类需要 api_key）
+        if ctx.model_name == "auto":
+            ctx.extra["autoRequested"] = True
+            ctx.model_name = None
 
         if not ctx.model_name:
             model = (
@@ -207,11 +221,133 @@ class ChatPipeline:
             ctx.api_key = decrypt_key(provider.encrypted_api_key)
         except Exception as exc:
             raise PipelineError("API Key 解密失败，请重新保存服务商配置") from exc
+
+        if ctx.extra.get("autoRequested"):
+            try:
+                await self._apply_smart_selection(ctx, provider)
+            except Exception:
+                logger.warning("智能选模失败，降级默认模型", exc_info=True)
         return ctx
+
+    async def _apply_smart_selection(self, ctx: ChatContext, provider: Provider) -> None:
+        """任务感知智能选模：规则分类优先，模糊时轻量 LLM 兑底；
+        开关关闭/无命中时保持现有兑底默认模型，不产生 autoModel 事件。"""
+        # 局部导入避免循环依赖（classifier -> rewriter -> 本模块）
+        from app.modules.routing import classifier
+        from app.modules.routing import service as routing_service
+
+        if not await routing_service.is_smart_selection_enabled(
+            self.session, ctx.user_id
+        ):
+            return
+
+        # 取最后一条 user 消息判断是否带图片附件（regenerate 时兼做文本兑底）；
+        # 纯文档附件不强制 vision，且文档内容不参与规则匹配（只用用户输入原文）
+        has_image_attachments = False
+        user_message = ctx.user_message
+        for m in reversed(ctx.history):
+            if m.get("role") == "user":
+                attachments = m.get("attachments")
+                if isinstance(attachments, list):
+                    images, _docs = self._split_attachments(attachments)
+                    has_image_attachments = bool(images)
+                if not user_message:
+                    user_message = str(m.get("content") or "")
+                break
+
+        task_type = classifier.classify_by_rules(user_message, has_image_attachments)
+        if task_type is None:
+            # 此时 base_url/api_key/model_name（兑底默认模型）均已就绪
+            task_type = await classifier.classify_by_llm(ctx, user_message)
+
+        models = (
+            (
+                await self.session.execute(
+                    select(Model)
+                    .where(Model.provider_id == provider.id)
+                    .order_by(Model.is_default.desc(), Model.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not models:
+            return
+        ranked = classifier.rank_models(list(models), task_type)
+
+        # 粘性：本轮 general 且上一模型仍在候选中且不在冷却 → 沿用，避免模型反复横跳
+        selected: str | None = None
+        sticky = classifier.get_sticky(ctx.conversation_id)
+        if (
+            task_type == "general"
+            and sticky is not None
+            and any(m.name == sticky[1] for m in models)
+            and not _in_cooldown(provider.id, sticky[1])
+        ):
+            selected = sticky[1]
+        else:
+            for m in ranked:
+                if not _in_cooldown(provider.id, m.name):
+                    selected = m.name
+                    break
+        if selected is None:
+            return
+
+        ctx.model_name = selected
+        ctx.extra["autoModel"] = {"model": selected, "taskType": task_type}
+        ctx.extra["rankedModels"] = [m.name for m in ranked]
+        classifier.set_sticky(ctx.conversation_id, task_type, selected)
 
     # ------------------------------------------------------------------
     # 多模态：把带附件的历史转成 OpenAI 兼容的 messages
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_attachments(
+        attachments: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """按扩展名把附件分流为 (图片, 文档)；未知扩展名归图片（维持原行为）。"""
+        images: list[dict[str, Any]] = []
+        docs: list[dict[str, Any]] = []
+        for a in attachments:
+            ext = (
+                Path(str(a.get("fileName") or "")).suffix.lower()
+                or Path(str(a.get("url") or "")).suffix.lower()
+            )
+            (docs if ext in extractor.DOC_EXTENSIONS else images).append(a)
+        return images, docs
+
+    @staticmethod
+    def _build_doc_injection(docs: list[dict[str, Any]]) -> str:
+        """抽取文档附件文本并拼成注入片段；合计超预算后停止注入后续文件。
+
+        任何异常降级为占位文本，绝不中断聊天。
+        """
+        segments: list[str] = []
+        used = 0
+        budget_exceeded = False
+        for a in docs:
+            file_name = str(a.get("fileName") or Path(str(a.get("url") or "")).name)
+            try:
+                if budget_exceeded:
+                    segments.append(f"\n\n[文件 {file_name} 内容因长度限制未注入]")
+                    continue
+                # 只取文件名，防路径穿越
+                file_path = UPLOAD_DIR / Path(str(a.get("url") or "")).name
+                text = extractor.extract_text(file_path, file_name)
+                if text is None:
+                    segments.append(f"\n\n[文件 {file_name} 内容解析失败]")
+                    continue
+                if used + len(text) > extractor.MAX_CHARS_PER_MESSAGE:
+                    budget_exceeded = True
+                    segments.append(f"\n\n[文件 {file_name} 内容因长度限制未注入]")
+                    continue
+                used += len(text)
+                segments.append(f"\n\n【文件：{file_name}】\n{text}")
+            except Exception:
+                logger.warning("文档附件注入失败，降级占位：%s", file_name, exc_info=True)
+                segments.append(f"\n\n[文件 {file_name} 内容解析失败]")
+        return "".join(segments)
 
     @staticmethod
     def _load_image_data_url(url: str) -> str | None:
@@ -272,7 +408,8 @@ class ChatPipeline:
 
     @staticmethod
     def _build_upstream_messages(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """组装发给上游的 messages：仅最新一条带图 user 消息携带真实图片，
+        """组装发给上游的 messages：仅最新一条带附件 user 消息携带真实内容
+        （图片走 image_url parts，文档抽文本合入 text），
         更早轮次退化为纯文本占位，控制 token 消耗。"""
         latest_idx = -1
         for i in range(len(history) - 1, -1, -1):
@@ -287,17 +424,41 @@ class ChatPipeline:
                 messages.append({"role": m["role"], "content": m["content"]})
                 continue
             text = str(m.get("content") or "")
+            try:
+                images, docs = ChatPipeline._split_attachments(attachments)
+            except Exception:
+                logger.warning("附件分流失败，降级纯文本", exc_info=True)
+                messages.append({"role": m["role"], "content": text})
+                continue
             if i != latest_idx:
-                # 历史带图消息：退化为文本占位
+                # 历史带附件消息：退化为文本占位，不注入内容
+                placeholders = (["[图片]"] if images else []) + [
+                    f"[文件: {a.get('fileName') or ''}]" for a in docs
+                ]
                 messages.append(
-                    {"role": m["role"], "content": f"{text}\n[图片]".strip()}
+                    {
+                        "role": m["role"],
+                        "content": "\n".join([text] + placeholders).strip(),
+                    }
                 )
+                continue
+            # 文档附件：抽取文本追加到消息文本后；异常降级占位，绝不中断聊天
+            if docs:
+                try:
+                    text = (text + ChatPipeline._build_doc_injection(docs)).strip()
+                except Exception:
+                    logger.warning("文档注入失败，降级占位", exc_info=True)
+                    text = "\n".join(
+                        [text] + [f"[文件: {a.get('fileName') or ''}]" for a in docs]
+                    ).strip()
+            if not images:
+                messages.append({"role": m["role"], "content": text})
                 continue
             parts: list[dict[str, Any]] = [
                 # 纯图无文字时用默认提示词兑底
                 {"type": "text", "text": text or "请分析这张图片"}
             ]
-            for a in attachments:
+            for a in images:
                 data_url = ChatPipeline._load_image_data_url(str(a.get("url") or ""))
                 if data_url:
                     parts.append(
@@ -395,6 +556,13 @@ class ChatPipeline:
             .all()
         )
         names = [m.name for m in models]
+        # 智能选模已给出任务感知排序：以其为基准序（限本渠道存在的模型，
+        # 不在名单内的追加在后），再做现有的置顶与冷却过滤
+        ranked = ctx.extra.get("rankedModels")
+        if isinstance(ranked, list) and ranked:
+            existing = set(names)
+            base = [str(n) for n in ranked if str(n) in existing]
+            names = base + [n for n in names if n not in base]
         if ctx.model_name:
             if ctx.model_name in names:
                 names.remove(ctx.model_name)
@@ -497,7 +665,7 @@ class ChatPipeline:
         )
         self.session.add(message)
         conversation = await conv_service.get_conversation(
-            self.session, ctx.conversation_id
+            self.session, ctx.conversation_id, ctx.user_id
         )
         if conversation is not None:
             conversation.updated_at = conv_service._now()

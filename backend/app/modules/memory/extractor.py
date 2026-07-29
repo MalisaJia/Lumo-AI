@@ -111,7 +111,7 @@ def _is_duplicate(content: str, existing_normalized: list[str]) -> bool:
 
 
 async def _extract_memories(
-    session, conversation_id: str, user_message: str,
+    session, user_id: str, conversation_id: str, user_message: str,
     base_url: str, api_key: str, model_name: str,
 ) -> None:
     """LLM 提取新记忆并去重入库（每轮最多 MAX_NEW_MEMORIES 条）。"""
@@ -119,7 +119,10 @@ async def _extract_memories(
         (
             await session.execute(
                 select(Memory)
-                .where(Memory.memory_type != "summary")
+                .where(
+                    Memory.user_id == user_id,
+                    Memory.memory_type != "summary",
+                )
                 .order_by(Memory.created_at.desc())
             )
         )
@@ -169,6 +172,7 @@ async def _extract_memories(
         )
         await memory_service.create_memory(
             session,
+            user_id,
             content=content,
             memory_type=memory_type,
             tags=tags or None,
@@ -182,7 +186,7 @@ async def _extract_memories(
 
 
 async def _compress_history(
-    session, conversation_id: str,
+    session, user_id: str, conversation_id: str,
     base_url: str, api_key: str, model_name: str,
 ) -> None:
     """长历史压缩：消息数超阈值时把较早消息摘要成 summary 记忆行。"""
@@ -203,6 +207,7 @@ async def _compress_history(
             await session.execute(
                 select(Memory)
                 .where(
+                    Memory.user_id == user_id,
                     Memory.source_conversation_id == conversation_id,
                     Memory.memory_type == "summary",
                     Memory.is_enabled.is_(True),
@@ -267,6 +272,7 @@ async def _compress_history(
     if summary_row is None:
         session.add(
             Memory(
+                user_id=user_id,
                 memory_type="summary",
                 content=summary_text,
                 source_conversation_id=conversation_id,
@@ -283,6 +289,7 @@ async def _compress_history(
 
 
 async def extract_after_reply(
+    user_id: str,
     conversation_id: str,
     user_message: str,
     response_text: str,
@@ -290,20 +297,23 @@ async def extract_after_reply(
     api_key: str | None,
     model_name: str | None,
 ) -> None:
-    """后台任务入口：记忆提取 + 长历史压缩；任何异常仅记日志。"""
+    """后台任务入口：记忆提取 + 长历史压缩；任何异常仅记日志。
+
+    自建 session 不携带请求上下文，user_id 必须由调用方显式传入。
+    """
     try:
         if not base_url or not api_key or not model_name:
             return
         async with async_session_factory() as session:
-            if not await memory_service.is_memory_enabled(session):
+            if not await memory_service.is_memory_enabled(session, user_id):
                 return
             if len((user_message or "").strip()) >= 4:
                 await _extract_memories(
-                    session, conversation_id, user_message,
+                    session, user_id, conversation_id, user_message,
                     base_url, api_key, model_name,
                 )
             await _compress_history(
-                session, conversation_id, base_url, api_key, model_name
+                session, user_id, conversation_id, base_url, api_key, model_name
             )
     except Exception:
         logger.warning("后台记忆提取失败（已忽略）", exc_info=True)

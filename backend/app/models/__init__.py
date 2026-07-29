@@ -15,10 +15,27 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    """用户（多用户预备；单用户模式下不使用，数据归属默认用户 "local"）。"""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
 class Provider(Base):
     __tablename__ = "providers"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # 数据归属用户（单用户模式下恒为 "local"）
+    user_id: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="local", index=True
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     base_url: Mapped[str] = mapped_column(String(500), nullable=False)
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
@@ -39,6 +56,8 @@ class Model(Base):
     label: Mapped[str] = mapped_column(String(200), nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     context_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 能力标签（JSON 数组字符串：["code","reasoning"]）；空时按模型名走默认能力表
+    capability_tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
 
     provider: Mapped["Provider"] = relationship(back_populates="models")
@@ -46,8 +65,13 @@ class Model(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # 数据归属用户（单用户模式下恒为 "local"）
+    user_id: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="local", index=True
+    )
     title: Mapped[str] = mapped_column(String(300), nullable=False, default="新对话")
     provider_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -87,9 +111,18 @@ class Memory(Base):
     """长期记忆：用户事实(fact)/偏好(preference)/会话摘要(summary)。"""
 
     __tablename__ = "memories"
-    __table_args__ = (Index("ix_memories_type_created", "memory_type", "created_at"),)
+    __table_args__ = (
+        Index("ix_memories_type_created", "memory_type", "created_at"),
+        Index(
+            "ix_memories_user_type_created", "user_id", "memory_type", "created_at"
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    # 数据归属用户（单用户模式下恒为 "local"）
+    user_id: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="local", index=True
+    )
     memory_type: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # 标签（JSON 数组字符串：["关键词"]）；无标签时为 NULL
@@ -107,10 +140,14 @@ class Memory(Base):
 
 
 class Setting(Base):
-    """全局 key-value 设置（如联网搜索配置）；敏感值加密后存入。"""
+    """按用户隔离的 key-value 设置（如联网搜索配置）；敏感值加密后存入。"""
 
     __tablename__ = "settings"
 
+    # 数据归属用户（单用户模式下恒为 "local"）；与 key 构成复合主键
+    user_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, server_default="local"
+    )
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(

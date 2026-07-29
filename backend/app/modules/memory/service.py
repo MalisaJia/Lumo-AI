@@ -34,21 +34,23 @@ _TYPE_LABELS = {"fact": "事实", "preference": "偏好", "summary": "摘要"}
 # ---------------------------------------------------------------------------
 
 
-async def is_memory_enabled(session: AsyncSession) -> bool:
+async def is_memory_enabled(session: AsyncSession, user_id: str) -> bool:
     """内部使用：仅显式保存 "false" 时关闭，默认开启。"""
-    return (await _get_setting(session, KEY_MEMORY_ENABLED)) != "false"
+    return (await _get_setting(session, user_id, KEY_MEMORY_ENABLED)) != "false"
 
 
-async def get_memory_settings(session: AsyncSession) -> dict[str, Any]:
-    return {"enabled": await is_memory_enabled(session)}
+async def get_memory_settings(session: AsyncSession, user_id: str) -> dict[str, Any]:
+    return {"enabled": await is_memory_enabled(session, user_id)}
 
 
 async def update_memory_settings(
-    session: AsyncSession, *, enabled: bool
+    session: AsyncSession, user_id: str, *, enabled: bool
 ) -> dict[str, Any]:
-    await _set_setting(session, KEY_MEMORY_ENABLED, "true" if enabled else "false")
+    await _set_setting(
+        session, user_id, KEY_MEMORY_ENABLED, "true" if enabled else "false"
+    )
     await session.commit()
-    return await get_memory_settings(session)
+    return await get_memory_settings(session, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -84,10 +86,15 @@ def _to_dict(memory: Memory) -> dict[str, Any]:
 
 async def list_memories(
     session: AsyncSession,
+    user_id: str,
     since: datetime | None = None,
     type_: str | None = None,
 ) -> list[dict[str, Any]]:
-    stmt = select(Memory).order_by(Memory.created_at.desc())
+    stmt = (
+        select(Memory)
+        .where(Memory.user_id == user_id)
+        .order_by(Memory.created_at.desc())
+    )
     if since is not None:
         # DB 存 naive UTC，带时区的入参先归一
         if since.tzinfo is not None:
@@ -101,6 +108,7 @@ async def list_memories(
 
 async def create_memory(
     session: AsyncSession,
+    user_id: str,
     *,
     content: str,
     memory_type: str = "fact",
@@ -109,6 +117,7 @@ async def create_memory(
     source_message_id: str | None = None,
 ) -> dict[str, Any]:
     memory = Memory(
+        user_id=user_id,
         memory_type=memory_type,
         content=content.strip(),
         tags=json.dumps(tags, ensure_ascii=False) if tags else None,
@@ -120,8 +129,13 @@ async def create_memory(
     return _to_dict(memory)
 
 
-async def get_memory(session: AsyncSession, memory_id: str) -> Memory | None:
-    result = await session.execute(select(Memory).where(Memory.id == memory_id))
+async def get_memory(
+    session: AsyncSession, memory_id: str, user_id: str
+) -> Memory | None:
+    """按 id + user_id 双条件查询：他人记忆查不到即 None（路由层转 404）。"""
+    result = await session.execute(
+        select(Memory).where(Memory.id == memory_id, Memory.user_id == user_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -163,12 +177,16 @@ def _tokenize(text: str) -> set[str]:
 
 
 async def build_memory_context(
-    session: AsyncSession, user_message: str
+    session: AsyncSession, user_id: str, user_message: str
 ) -> str | None:
     """挑选与当前问题最相关的记忆，组装成中文提示块；无记忆返回 None。"""
     result = await session.execute(
         select(Memory)
-        .where(Memory.is_enabled.is_(True), Memory.memory_type != "summary")
+        .where(
+            Memory.user_id == user_id,
+            Memory.is_enabled.is_(True),
+            Memory.memory_type != "summary",
+        )
         .order_by(Memory.updated_at.desc())
         .limit(CONTEXT_CANDIDATE_LIMIT)
     )

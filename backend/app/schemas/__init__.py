@@ -33,6 +33,8 @@ class ModelIn(CamelModel):
     label: str | None = None
     is_default: bool = False
     context_length: int | None = None
+    # 能力标签（取值限六种任务类型）；不传/空时按模型名走默认能力表
+    capability_tags: list[str] | None = None
 
 
 class ModelOut(CamelModel):
@@ -41,6 +43,7 @@ class ModelOut(CamelModel):
     label: str
     is_default: bool
     context_length: int | None = None
+    capability_tags: list[str] | None = None
 
 
 class ProviderCreate(CamelModel):
@@ -209,13 +212,16 @@ class SearchSettingsUpdate(CamelModel):
 
 
 class RoutingSettingsOut(CamelModel):
-    """GET/PUT 响应：同渠道模型自动路由开关。"""
+    """GET/PUT 响应：同渠道模型自动路由与任务感知智能选模开关。"""
 
     enabled: bool = True
+    smart_selection_enabled: bool = False
 
 
 class RoutingSettingsUpdate(CamelModel):
     enabled: bool
+    # 可选：旧客户端不传时保持现值（向后兼容）
+    smart_selection_enabled: bool | None = None
 
 
 # ---------------------------------------------------------------------------

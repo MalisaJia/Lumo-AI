@@ -220,28 +220,35 @@ function SearchSettingsSection() {
   )
 }
 
-// 模型路由设置：同渠道自动故障转移开关
+// 模型路由设置：同渠道自动故障转移 + 任务感知智能选模开关
 function RoutingSettingsSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [enabled, setEnabled] = useState(true)
+  const [smartSelectionEnabled, setSmartSelectionEnabled] = useState(false)
 
   useEffect(() => {
     settingsApi
       .getRouting()
-      .then((s) => setEnabled(s.enabled))
+      .then((s) => {
+        setEnabled(s.enabled)
+        setSmartSelectionEnabled(s.smartSelectionEnabled)
+        useSettingsStore.getState().setRoutingSettings(s)
+      })
       .catch((err) => {
         toast.error(err instanceof Error ? err.message : '加载路由设置失败')
       })
       .finally(() => setLoading(false))
   }, [])
 
-  const handleToggle = async () => {
-    const next = !enabled
+  // PUT 全量提交两个字段；保存后同步 settingsStore 让 ModelSelector 立即感知
+  const handleSave = async (next: { enabled: boolean; smartSelectionEnabled: boolean }) => {
     setSaving(true)
     try {
-      const updated = await settingsApi.updateRouting({ enabled: next })
+      const updated = await settingsApi.updateRouting(next)
       setEnabled(updated.enabled)
+      setSmartSelectionEnabled(updated.smartSelectionEnabled)
+      useSettingsStore.getState().setRoutingSettings(updated)
       toast.success('路由设置已保存')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '保存失败')
@@ -250,32 +257,53 @@ function RoutingSettingsSection() {
     }
   }
 
+  const renderSwitch = (checked: boolean, onToggle: () => void) => (
+    <button
+      onClick={onToggle}
+      disabled={saving}
+      className={clsx(
+        'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
+        checked ? 'bg-gradient-to-r from-violet-500 to-blue-500' : 'bg-neutral-300',
+      )}
+      role="switch"
+      aria-checked={checked}
+    >
+      <span
+        className={clsx(
+          'absolute top-0.5 size-5 rounded-full bg-white shadow transition-all',
+          checked ? 'left-[22px]' : 'left-0.5',
+        )}
+      />
+    </button>
+  )
+
   return (
     <section>
       <h3 className="mb-2 text-sm font-semibold text-neutral-500 dark:text-neutral-400">模型路由</h3>
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
-        <span className="text-sm">遇到限流或故障时自动切换同渠道其他模型</span>
-        {loading ? (
-          <span className="text-sm text-neutral-400">加载中…</span>
-        ) : (
-          <button
-            onClick={handleToggle}
-            disabled={saving}
-            className={clsx(
-              'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
-              enabled ? 'bg-gradient-to-r from-violet-500 to-blue-500' : 'bg-neutral-300',
-            )}
-            role="switch"
-            aria-checked={enabled}
-          >
-            <span
-              className={clsx(
-                'absolute top-0.5 size-5 rounded-full bg-white shadow transition-all',
-                enabled ? 'left-[22px]' : 'left-0.5',
-              )}
-            />
-          </button>
-        )}
+      <div className="flex flex-col gap-3 rounded-xl border border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm">遇到限流或故障时自动切换同渠道其他模型</span>
+          {loading ? (
+            <span className="text-sm text-neutral-400">加载中…</span>
+          ) : (
+            renderSwitch(enabled, () => handleSave({ enabled: !enabled, smartSelectionEnabled }))
+          )}
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm">智能选模</span>
+            <span className="text-xs text-neutral-400 dark:text-neutral-500">
+              根据问题类型自动匹配最擅长的模型，在模型选择器中选择「✨ 自动」后生效
+            </span>
+          </div>
+          {loading ? (
+            <span className="text-sm text-neutral-400">加载中…</span>
+          ) : (
+            renderSwitch(smartSelectionEnabled, () =>
+              handleSave({ enabled, smartSelectionEnabled: !smartSelectionEnabled }),
+            )
+          )}
+        </div>
       </div>
     </section>
   )

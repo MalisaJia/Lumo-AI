@@ -35,3 +35,8 @@ Thumbs.db
 *.log
 tmp/
 *.tmp
+
+# Local backups & verification artifacts
+*.db.bak
+diff_tmp.txt
+step*.png

@@ -1,5 +1,5 @@
 // 输入框：自适应高度，Enter 发送 / Shift+Enter 换行，流式中变为停止按钮；
-// 支持图片上传（按钮选择/粘贴），缩略图预览后随消息发送
+// 支持附件上传（按钮选择/粘贴）：图片缩略图预览、文档文件 chip 预览，随消息发送
 import { useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import { uploadsApi } from '../../api/client'
@@ -7,32 +7,51 @@ import type { Attachment } from '../../api/types'
 import { useChatStore } from '../../stores/chatStore'
 import { toast } from '../../stores/toastStore'
 
-const MAX_IMAGES = 4
+const MAX_FILES = 4
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 单文件 10MB（与后端一致）
 
-// 待发送图片：先本地预览，上传成功后携带服务端 attachment
-interface PendingImage {
+// 文档扩展名白名单（与后端 /api/uploads 放行列表一致）
+const DOC_EXTENSIONS = [
+  '.pdf', '.txt', '.md', '.markdown',
+  '.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.c', '.cpp', '.h', '.cs',
+  '.go', '.rs', '.rb', '.php', '.html', '.css',
+  '.json', '.yaml', '.yml', '.xml', '.sql', '.sh', '.csv', '.log',
+]
+const FILE_ACCEPT = ['image/*', ...DOC_EXTENSIONS].join(',')
+
+const extOf = (name: string) => {
+  const i = name.lastIndexOf('.')
+  return i >= 0 ? name.slice(i).toLowerCase() : ''
+}
+const isAcceptedFile = (f: File) =>
+  f.type.startsWith('image/') || DOC_EXTENSIONS.includes(extOf(f.name))
+
+// 待发送附件：图片先本地预览，上传成功后携带服务端 attachment
+interface PendingFile {
   localId: string
   fileName: string
-  previewUrl: string
+  isImage: boolean
+  previewUrl?: string // 仅图片有本地预览
   status: 'uploading' | 'done'
   attachment?: Attachment
 }
 
-let imageSeq = 1
+let fileSeq = 1
 
 export function ChatInput() {
   const [value, setValue] = useState('')
-  const [images, setImages] = useState<PendingImage[]>([])
+  const [files, setFiles] = useState<PendingFile[]>([])
   const streaming = useChatStore((s) => s.streaming)
   const webSearchEnabled = useChatStore((s) => s.webSearchEnabled)
   const pendingInput = useChatStore((s) => s.pendingInput)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // 卸载时释放所有 objectURL
-  const imagesRef = useRef(images)
-  imagesRef.current = images
+  const filesRef = useRef(files)
+  filesRef.current = files
   useEffect(
-    () => () => imagesRef.current.forEach((img) => URL.revokeObjectURL(img.previewUrl)),
+    () => () =>
+      filesRef.current.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl)),
     [],
   )
 
@@ -51,39 +70,49 @@ export function ChatInput() {
     requestAnimationFrame(resize)
   }, [pendingInput])
 
-  const removeImage = (localId: string) => {
-    setImages((list) => {
-      const target = list.find((img) => img.localId === localId)
-      if (target) URL.revokeObjectURL(target.previewUrl)
-      return list.filter((img) => img.localId !== localId)
+  const removeFile = (localId: string) => {
+    setFiles((list) => {
+      const target = list.find((f) => f.localId === localId)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      return list.filter((f) => f.localId !== localId)
     })
   }
 
   // 选中/粘贴后立即上传；失败 toast 并移除预览
-  const addFiles = (files: File[]) => {
-    const imageFiles = files.filter((f) => f.type.startsWith('image/'))
-    if (!imageFiles.length) return
-    const room = MAX_IMAGES - imagesRef.current.length
+  const addFiles = (candidates: File[]) => {
+    const accepted = candidates.filter(isAcceptedFile)
+    if (!accepted.length) return
+    // 超 10MB 的文件提示并跳过
+    const valid = accepted.filter((file) => {
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(`「${file.name}」超过 10MB，已跳过`)
+        return false
+      }
+      return true
+    })
+    if (!valid.length) return
+    const room = MAX_FILES - filesRef.current.length
     if (room <= 0) {
-      toast.error(`最多上传 ${MAX_IMAGES} 张图片`)
+      toast.error(`最多上传 ${MAX_FILES} 个附件`)
       return
     }
-    if (imageFiles.length > room) toast.error(`最多上传 ${MAX_IMAGES} 张图片`)
-    for (const file of imageFiles.slice(0, room)) {
-      const localId = `img-${imageSeq++}`
-      const previewUrl = URL.createObjectURL(file)
-      setImages((list) => [
+    if (valid.length > room) toast.error(`最多上传 ${MAX_FILES} 个附件`)
+    for (const file of valid.slice(0, room)) {
+      const localId = `file-${fileSeq++}`
+      const isImage = file.type.startsWith('image/')
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined
+      setFiles((list) => [
         ...list,
-        { localId, fileName: file.name, previewUrl, status: 'uploading' },
+        { localId, fileName: file.name, isImage, previewUrl, status: 'uploading' },
       ])
       uploadsApi
         .upload(file)
         .then((res) => {
-          setImages((list) =>
-            list.map((img) =>
-              img.localId === localId
+          setFiles((list) =>
+            list.map((f) =>
+              f.localId === localId
                 ? {
-                    ...img,
+                    ...f,
                     status: 'done',
                     attachment: {
                       id: res.id,
@@ -92,41 +121,41 @@ export function ChatInput() {
                       mimeType: res.mimeType,
                     },
                   }
-                : img,
+                : f,
             ),
           )
         })
         .catch((err) => {
-          toast.error(err instanceof Error ? err.message : '图片上传失败')
-          removeImage(localId)
+          toast.error(err instanceof Error ? err.message : '附件上传失败')
+          removeFile(localId)
         })
     }
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData?.files ?? [])
-    if (files.some((f) => f.type.startsWith('image/'))) {
+    const pasted = Array.from(e.clipboardData?.files ?? [])
+    if (pasted.some(isAcceptedFile)) {
       e.preventDefault()
-      addFiles(files)
+      addFiles(pasted)
     }
   }
 
-  const uploading = images.some((img) => img.status === 'uploading')
-  const attachments = images
-    .filter((img) => img.status === 'done' && img.attachment)
-    .map((img) => img.attachment!)
+  const uploading = files.some((f) => f.status === 'uploading')
+  const attachments = files
+    .filter((f) => f.status === 'done' && f.attachment)
+    .map((f) => f.attachment!)
   const canSend = !streaming && (!!value.trim() || attachments.length > 0)
 
   const handleSend = () => {
     const content = value.trim()
     if (streaming || (!content && !attachments.length)) return
     if (uploading) {
-      toast.error('图片上传中，请稍候')
+      toast.error('附件上传中，请稍候')
       return
     }
     setValue('')
-    images.forEach((img) => URL.revokeObjectURL(img.previewUrl))
-    setImages([])
+    files.forEach((f) => f.previewUrl && URL.revokeObjectURL(f.previewUrl))
+    setFiles([])
     requestAnimationFrame(resize)
     useChatStore.getState().sendMessage(content, attachments)
   }
@@ -141,27 +170,53 @@ export function ChatInput() {
   return (
     <div className="border-t border-neutral-200 bg-white/80 px-4 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/80">
       <div className="mx-auto flex max-w-3xl flex-col gap-1.5 rounded-2xl border border-neutral-300 bg-white p-2 shadow-sm transition-colors focus-within:border-violet-400 dark:border-neutral-700 dark:bg-neutral-800 dark:focus-within:border-violet-500">
-        {/* 图片预览条 */}
-        {images.length > 0 && (
+        {/* 附件预览条：图片缩略图 / 文档文件 chip */}
+        {files.length > 0 && (
           <div className="flex flex-wrap gap-2 px-1 pt-1">
-            {images.map((img) => (
+            {files.map((f) => (
               <div
-                key={img.localId}
-                className="group/thumb relative size-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-600"
+                key={f.localId}
+                className={clsx(
+                  'group/thumb relative h-16 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-600',
+                  f.isImage
+                    ? 'size-16'
+                    : 'flex max-w-[200px] items-center gap-2 bg-neutral-50 px-2.5 dark:bg-neutral-700/40',
+                )}
               >
-                <img
-                  src={img.previewUrl}
-                  alt={img.fileName}
-                  className="size-full object-cover"
-                />
-                {img.status === 'uploading' && (
+                {f.isImage ? (
+                  <img
+                    src={f.previewUrl}
+                    alt={f.fileName}
+                    className="size-full object-cover"
+                  />
+                ) : (
+                  <>
+                    <svg
+                      viewBox="0 0 24 24"
+                      className="size-6 shrink-0 fill-none stroke-violet-500 dark:stroke-violet-400"
+                      strokeWidth="1.6"
+                    >
+                      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                      <path d="M14 3v5h5" />
+                    </svg>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-xs text-neutral-600 dark:text-neutral-300">
+                        {f.fileName}
+                      </span>
+                      <span className="text-[10px] text-neutral-400 uppercase">
+                        {extOf(f.fileName).slice(1) || '文件'}
+                      </span>
+                    </span>
+                  </>
+                )}
+                {f.status === 'uploading' && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                     <span className="size-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
                   </div>
                 )}
                 <button
-                  onClick={() => removeImage(img.localId)}
-                  title="移除图片"
+                  onClick={() => removeFile(f.localId)}
+                  title="移除附件"
                   className="absolute top-0.5 right-0.5 flex size-4.5 items-center justify-center rounded-full bg-black/60 text-[11px] leading-none text-white opacity-0 transition-opacity group-hover/thumb:opacity-100 hover:bg-black/80"
                 >
                   ×
@@ -205,7 +260,7 @@ export function ChatInput() {
             </button>
           )}
         </div>
-        {/* 工具条：联网搜索开关（激活态为柔和紫蓝渐变）+ 图片上传 */}
+        {/* 工具条：联网搜索开关（激活态为柔和紫蓝渐变）+ 附件上传 */}
         <div className="flex items-center gap-1.5 px-1">
           <button
             onClick={() => useChatStore.getState().toggleWebSearch()}
@@ -226,21 +281,19 @@ export function ChatInput() {
           </button>
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={images.length >= MAX_IMAGES}
-            title={images.length >= MAX_IMAGES ? `最多上传 ${MAX_IMAGES} 张图片` : '上传图片'}
+            disabled={files.length >= MAX_FILES}
+            title={files.length >= MAX_FILES ? `最多上传 ${MAX_FILES} 个附件` : '上传附件（图片 / PDF / 文本 / 代码）'}
             className="flex items-center gap-1.5 rounded-full border border-neutral-300 px-2.5 py-1 text-xs text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-300"
           >
             <svg viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current" strokeWidth="1.8">
-              <rect x="3" y="5" width="18" height="14" rx="2" />
-              <circle cx="8.5" cy="10" r="1.5" />
-              <path d="m21 15-4.5-4.5L9 18M3 17l4-4 3 3" />
+              <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57a4 4 0 1 1 5.66 5.66l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
-            图片
+            附件
           </button>
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept={FILE_ACCEPT}
             multiple
             className="hidden"
             onChange={(e) => {

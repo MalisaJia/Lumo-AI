@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user_id
 from app.core.config import settings
 from app.core.db import get_session
 from app.modules.search import service, urlguard
@@ -10,13 +11,18 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("/search", response_model=SearchSettingsOut)
-async def get_search_settings(session: AsyncSession = Depends(get_session)):
-    return await service.get_search_settings(session)
+async def get_search_settings(
+    session: AsyncSession = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
+):
+    return await service.get_search_settings(session, user_id)
 
 
 @router.put("/search", response_model=SearchSettingsOut)
 async def update_search_settings(
-    body: SearchSettingsUpdate, session: AsyncSession = Depends(get_session)
+    body: SearchSettingsUpdate,
+    session: AsyncSession = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
 ):
     # SSRF 防护：searxngUrl 入库前校验；ALLOW_PRIVATE_SEARXNG=true 时放行私网
     if body.searxng_url is not None and body.searxng_url.strip():
@@ -30,6 +36,7 @@ async def update_search_settings(
             )
     return await service.update_search_settings(
         session,
+        user_id,
         search_provider=body.search_provider,
         tavily_api_key=body.tavily_api_key,
         searxng_url=body.searxng_url,

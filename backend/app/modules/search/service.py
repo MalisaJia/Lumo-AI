@@ -40,25 +40,34 @@ _JUDGE_SYSTEM = (
 # ---------------------------------------------------------------------------
 
 
-async def _get_setting(session: AsyncSession, key: str) -> str | None:
-    result = await session.execute(select(Setting).where(Setting.key == key))
+async def _get_setting(
+    session: AsyncSession, user_id: str, key: str
+) -> str | None:
+    # settings 主键已是 (user_id, key) 复合键，读取必须双条件
+    result = await session.execute(
+        select(Setting).where(Setting.user_id == user_id, Setting.key == key)
+    )
     setting = result.scalar_one_or_none()
     return setting.value if setting else None
 
 
-async def _set_setting(session: AsyncSession, key: str, value: str | None) -> None:
-    result = await session.execute(select(Setting).where(Setting.key == key))
+async def _set_setting(
+    session: AsyncSession, user_id: str, key: str, value: str | None
+) -> None:
+    result = await session.execute(
+        select(Setting).where(Setting.user_id == user_id, Setting.key == key)
+    )
     setting = result.scalar_one_or_none()
     if setting is None:
-        session.add(Setting(key=key, value=value))
+        session.add(Setting(user_id=user_id, key=key, value=value))
     else:
         setting.value = value
 
 
-async def get_search_settings(session: AsyncSession) -> dict[str, Any]:
+async def get_search_settings(session: AsyncSession, user_id: str) -> dict[str, Any]:
     """GET 响应数据：Tavily Key 只给脱敏形式。"""
-    provider = await _get_setting(session, KEY_PROVIDER) or "ddgs"
-    encrypted = await _get_setting(session, KEY_TAVILY_KEY)
+    provider = await _get_setting(session, user_id, KEY_PROVIDER) or "ddgs"
+    encrypted = await _get_setting(session, user_id, KEY_TAVILY_KEY)
     masked: str | None = None
     if encrypted:
         try:
@@ -68,12 +77,13 @@ async def get_search_settings(session: AsyncSession) -> dict[str, Any]:
     return {
         "search_provider": provider,
         "tavily_masked_key": masked,
-        "searxng_url": await _get_setting(session, KEY_SEARXNG_URL),
+        "searxng_url": await _get_setting(session, user_id, KEY_SEARXNG_URL),
     }
 
 
 async def update_search_settings(
     session: AsyncSession,
+    user_id: str,
     *,
     search_provider: str | None,
     tavily_api_key: str | None,
@@ -81,28 +91,34 @@ async def update_search_settings(
 ) -> dict[str, Any]:
     """PUT：tavilyApiKey 不传则保留原 Key；写入前 AESGCM 加密。"""
     if search_provider is not None:
-        await _set_setting(session, KEY_PROVIDER, search_provider)
+        await _set_setting(session, user_id, KEY_PROVIDER, search_provider)
     if tavily_api_key is not None:
-        await _set_setting(session, KEY_TAVILY_KEY, encrypt_key(tavily_api_key))
+        await _set_setting(
+            session, user_id, KEY_TAVILY_KEY, encrypt_key(tavily_api_key)
+        )
     if searxng_url is not None:
-        await _set_setting(session, KEY_SEARXNG_URL, searxng_url.strip() or None)
+        await _set_setting(
+            session, user_id, KEY_SEARXNG_URL, searxng_url.strip() or None
+        )
     await session.commit()
-    return await get_search_settings(session)
+    return await get_search_settings(session, user_id)
 
 
-async def _load_search_config(session: AsyncSession) -> dict[str, str | None]:
+async def _load_search_config(
+    session: AsyncSession, user_id: str
+) -> dict[str, str | None]:
     """内部使用：解密后的完整搜索配置。"""
     tavily_key: str | None = None
-    encrypted = await _get_setting(session, KEY_TAVILY_KEY)
+    encrypted = await _get_setting(session, user_id, KEY_TAVILY_KEY)
     if encrypted:
         try:
             tavily_key = decrypt_key(encrypted)
         except Exception:
             tavily_key = None
     return {
-        "provider": await _get_setting(session, KEY_PROVIDER) or "ddgs",
+        "provider": await _get_setting(session, user_id, KEY_PROVIDER) or "ddgs",
         "tavily_key": tavily_key,
-        "searxng_url": await _get_setting(session, KEY_SEARXNG_URL),
+        "searxng_url": await _get_setting(session, user_id, KEY_SEARXNG_URL),
     }
 
 
@@ -130,10 +146,13 @@ async def should_search(ctx: ChatContext, question: str) -> bool:
 
 
 async def run_search(
-    session: AsyncSession, query: str, max_results: int = SEARCH_MAX_RESULTS
+    session: AsyncSession,
+    user_id: str,
+    query: str,
+    max_results: int = SEARCH_MAX_RESULTS,
 ) -> list[dict[str, str]]:
     """按配置的搜索源检索；失败或无结果时自动降级到 DDGS。"""
-    config = await _load_search_config(session)
+    config = await _load_search_config(session, user_id)
     provider = build_provider(
         config["provider"] or "ddgs",
         tavily_api_key=config["tavily_key"],
@@ -182,7 +201,7 @@ async def run_search_pipeline(
         yield {"type": "notice", "reason": "skipped"}
         return
     query = await rewriter.rewrite_query(ctx, question)
-    results = await run_search(session, query)
+    results = await run_search(session, ctx.user_id, query)
     if not results:
         logger.warning("搜索链路最终无可用结果 (question=%r, query=%r)", question, query)
         yield {"type": "notice", "reason": "noResults"}

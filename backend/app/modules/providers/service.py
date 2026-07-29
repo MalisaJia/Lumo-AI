@@ -1,5 +1,6 @@
 """Provider 业务逻辑：CRUD、上游 Key 验证、baseUrl 规范化。"""
 
+import json
 from typing import Any
 
 import httpx
@@ -72,6 +73,17 @@ async def validate_upstream(base_url: str, api_key: str) -> dict[str, Any]:
         return {"valid": False, "error": f"网络错误：{exc.__class__.__name__}"}
 
 
+def _parse_capability_tags(raw: str | None) -> list[str] | None:
+    """DB 中为 JSON 数组字符串；解析失败/非数组视为无值。"""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return None
+    return [str(t) for t in parsed] if isinstance(parsed, list) else None
+
+
 def to_provider_dict(p: Provider) -> dict[str, Any]:
     """组装响应：只暴露 maskedKey，不含任何明文/密文 Key。"""
     try:
@@ -91,32 +103,43 @@ def to_provider_dict(p: Provider) -> dict[str, Any]:
                 "label": m.label,
                 "is_default": m.is_default,
                 "context_length": m.context_length,
+                "capability_tags": _parse_capability_tags(m.capability_tags),
             }
             for m in p.models
         ],
     }
 
 
-async def list_providers(session: AsyncSession) -> list[Provider]:
+async def list_providers(session: AsyncSession, user_id: str) -> list[Provider]:
     result = await session.execute(
-        select(Provider).options(selectinload(Provider.models)).order_by(Provider.created_at)
+        select(Provider)
+        .options(selectinload(Provider.models))
+        .where(Provider.user_id == user_id)
+        .order_by(Provider.created_at)
     )
     return list(result.scalars().all())
 
 
-async def get_provider(session: AsyncSession, provider_id: str) -> Provider | None:
+async def get_provider(
+    session: AsyncSession, provider_id: str, user_id: str
+) -> Provider | None:
+    """按 id + user_id 双条件查询：他人 Provider 查不到即 None（路由层转 404）。"""
     result = await session.execute(
         select(Provider)
         .options(selectinload(Provider.models))
-        .where(Provider.id == provider_id)
+        .where(Provider.id == provider_id, Provider.user_id == user_id)
     )
     return result.scalar_one_or_none()
 
 
-async def _clear_other_defaults(session: AsyncSession, keep_id: str) -> None:
-    """isDefault 互斥：同表其他记录置 False。"""
+async def _clear_other_defaults(
+    session: AsyncSession, user_id: str, keep_id: str
+) -> None:
+    """isDefault 互斥：仅在同一用户范围内把其他记录置 False。"""
     await session.execute(
-        update(Provider).where(Provider.id != keep_id).values(is_default=False)
+        update(Provider)
+        .where(Provider.user_id == user_id, Provider.id != keep_id)
+        .values(is_default=False)
     )
 
 
@@ -128,6 +151,12 @@ def _build_models(provider_id: str, items: list[ModelIn]) -> list[Model]:
             label=item.label or item.name,
             is_default=item.is_default,
             context_length=item.context_length,
+            # 空列表/None 存 NULL，读取时降级默认能力表
+            capability_tags=(
+                json.dumps(item.capability_tags, ensure_ascii=False)
+                if item.capability_tags
+                else None
+            ),
         )
         for item in items
     ]
@@ -143,6 +172,7 @@ def _build_models(provider_id: str, items: list[ModelIn]) -> list[Model]:
 
 async def create_provider(
     session: AsyncSession,
+    user_id: str,
     *,
     name: str,
     base_url: str,
@@ -151,6 +181,7 @@ async def create_provider(
     is_default: bool,
 ) -> Provider:
     provider = Provider(
+        user_id=user_id,
         name=name,
         base_url=normalize_base_url(base_url),
         encrypted_api_key=encrypt_key(api_key),
@@ -161,9 +192,9 @@ async def create_provider(
     for m in _build_models(provider.id, models):
         session.add(m)
     if is_default:
-        await _clear_other_defaults(session, provider.id)
+        await _clear_other_defaults(session, user_id, provider.id)
     await session.commit()
-    return await get_provider(session, provider.id)  # type: ignore[return-value]
+    return await get_provider(session, provider.id, user_id)  # type: ignore[return-value]
 
 
 async def update_provider(
@@ -185,13 +216,14 @@ async def update_provider(
     if is_default is not None:
         provider.is_default = is_default
         if is_default:
-            await _clear_other_defaults(session, provider.id)
+            # provider 已经过归属校验，按其 user_id 限定互斥范围
+            await _clear_other_defaults(session, provider.user_id, provider.id)
     if models is not None:
         await session.execute(delete(Model).where(Model.provider_id == provider.id))
         for m in _build_models(provider.id, models):
             session.add(m)
     await session.commit()
-    return await get_provider(session, provider.id)  # type: ignore[return-value]
+    return await get_provider(session, provider.id, provider.user_id)  # type: ignore[return-value]
 
 
 async def delete_provider(session: AsyncSession, provider: Provider) -> None:

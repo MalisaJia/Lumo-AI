@@ -50,6 +50,16 @@ if (-not (Test-Path $python)) {
     Write-Host '         python -m venv .venv'
     Write-Host '         .venv\Scripts\pip install -r requirements.txt'
     $envOk = $false
+} else {
+    # 依赖哨兵：老 venv 升级代码后可能缺 bcrypt/jwt/pypdf，启动前先探测
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $python -c "import bcrypt, jwt, pypdf" 2>$null | Out-Null
+    $ErrorActionPreference = $prevEAP
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '[错误] 后端依赖未齐全，请在 backend 目录运行 .venv\Scripts\pip install -r requirements.txt' -ForegroundColor Red
+        $envOk = $false
+    }
 }
 if (-not (Test-Path $nodeModules)) {
     Write-Host '[错误] 未找到前端依赖 frontend\node_modules' -ForegroundColor Red

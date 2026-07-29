@@ -1,11 +1,16 @@
 // 与后端 API 契约逐字段一致的类型定义（JSON 全部 camelCase）
 
+// 模型能力标签（智能选模用，合法值仅这六个）
+export type CapabilityTag = 'code' | 'writing' | 'long_text' | 'reasoning' | 'vision' | 'general'
+
 export interface ProviderModel {
   id: string
   name: string
   label: string
   isDefault: boolean
   contextLength: number
+  // 留空/null 表示使用内置默认能力
+  capabilityTags?: CapabilityTag[] | null
 }
 
 export interface Provider {
@@ -21,6 +26,8 @@ export interface ProviderModelInput {
   name: string
   label?: string
   isDefault?: boolean
+  // 空数组按 null 提交，表示使用内置默认能力
+  capabilityTags?: CapabilityTag[] | null
 }
 
 export interface ProviderCreateInput {
@@ -121,6 +128,8 @@ export type StreamEvent =
   | { type: 'searchNotice'; reason: SearchNoticeReason }
   // 同渠道模型自动路由：实际发生切换时才下发
   | { type: 'modelSwitch'; from: string; to: string }
+  // 任务感知智能选模：会话为「自动」模式时下发实际选用的模型
+  | { type: 'autoModel'; model: string; taskType: string }
 
 export interface StreamChatParams {
   conversationId: string
@@ -144,9 +153,10 @@ export interface SearchSettingsUpdateInput {
   searxngUrl?: string
 }
 
-// 同渠道模型自动路由设置（GET/PUT /api/settings/routing）
+// 模型路由设置（GET/PUT /api/settings/routing，PUT 全量提交两个字段）
 export interface RoutingSettings {
   enabled: boolean
+  smartSelectionEnabled: boolean
 }
 
 // 长期记忆条目（GET /api/memories）

@@ -13,9 +13,13 @@ def _now() -> datetime:
 
 
 async def list_conversations(
-    session: AsyncSession, q: str | None = None
+    session: AsyncSession, user_id: str, q: str | None = None
 ) -> list[Conversation]:
-    stmt = select(Conversation).order_by(Conversation.updated_at.desc())
+    stmt = (
+        select(Conversation)
+        .where(Conversation.user_id == user_id)
+        .order_by(Conversation.updated_at.desc())
+    )
     if q:
         pattern = f"%{q}%"
         stmt = stmt.where(
@@ -34,22 +38,28 @@ async def list_conversations(
 
 
 async def get_conversation(
-    session: AsyncSession, conversation_id: str
+    session: AsyncSession, conversation_id: str, user_id: str
 ) -> Conversation | None:
+    """按 id + user_id 双条件查询：他人会话查不到即 None（路由层转 404）。"""
     result = await session.execute(
-        select(Conversation).where(Conversation.id == conversation_id)
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.user_id == user_id,
+        )
     )
     return result.scalar_one_or_none()
 
 
 async def create_conversation(
     session: AsyncSession,
+    user_id: str,
     *,
     title: str | None,
     provider_id: str | None,
     model_name: str | None,
 ) -> Conversation:
     conversation = Conversation(
+        user_id=user_id,
         title=title or "新对话",
         provider_id=provider_id,
         model_name=model_name,
@@ -100,8 +110,15 @@ async def list_messages(
     return list(result.scalars().all())
 
 
-async def get_message(session: AsyncSession, message_id: str) -> Message | None:
-    result = await session.execute(select(Message).where(Message.id == message_id))
+async def get_message(
+    session: AsyncSession, message_id: str, user_id: str
+) -> Message | None:
+    """join 所属会话校验 user_id 归属：他人消息查不到即 None（路由层转 404）。"""
+    result = await session.execute(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Message.id == message_id, Conversation.user_id == user_id)
+    )
     return result.scalar_one_or_none()
 
 

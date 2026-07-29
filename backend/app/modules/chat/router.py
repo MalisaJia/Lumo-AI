@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import get_current_user_id
 from app.core.db import async_session_factory, get_session
 from app.models import Message
 from app.modules.conversations import service as conv_service
@@ -41,8 +42,12 @@ async def chat_stream(
     body: ChatStreamRequest,
     request: Request,
     session: AsyncSession = Depends(get_session),
+    user_id: str = Depends(get_current_user_id),
 ):
-    conversation = await conv_service.get_conversation(session, body.conversation_id)
+    # 归属校验：他人 conversation_id 查不到即 404
+    conversation = await conv_service.get_conversation(
+        session, body.conversation_id, user_id
+    )
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     # 有图片附件时允许 content 为空（纯图提问）
@@ -87,11 +92,14 @@ async def chat_stream(
     enable_search = body.enable_search
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        # StreamingResponse 生命周期长于 Depends 会话，这里独立开一个
+        # StreamingResponse 生命周期长于 Depends 会话，这里独立开一个；
+        # 自建 session 不携带请求上下文，user_id 必须显式传入 ChatContext
         async with async_session_factory() as stream_session:
             pipeline = ChatPipeline(stream_session)
             ctx = ChatContext(
-                conversation_id=conversation_id, user_message=user_content
+                conversation_id=conversation_id,
+                user_id=user_id,
+                user_message=user_content,
             )
             try:
                 await pipeline.load_history(ctx)
@@ -104,9 +112,11 @@ async def chat_stream(
                 
                 # 长期记忆：开启时把相关记忆作为 system 消息注入本次上下文（不持久化）
                 try:
-                    if await memory_service.is_memory_enabled(stream_session):
+                    if await memory_service.is_memory_enabled(
+                        stream_session, user_id
+                    ):
                         memory_block = await memory_service.build_memory_context(
-                            stream_session, ctx.user_message
+                            stream_session, user_id, ctx.user_message
                         )
                         if memory_block:
                             idx = (
@@ -122,6 +132,16 @@ async def chat_stream(
                     logger.warning("记忆注入失败，本轮不带记忆上下文", exc_info=True)
                 
                 await pipeline.select_model(ctx)
+
+                # 智能选模命中：告知前端实际使用的模型与任务类型
+                if ctx.extra.get("autoModel"):
+                    yield _sse(
+                        {
+                            "type": "autoModel",
+                            "model": ctx.extra["autoModel"]["model"],
+                            "taskType": ctx.extra["autoModel"]["taskType"],
+                        }
+                    )
 
                 # 联网搜索：仅开启时产出 status/sources/searchNotice 事件，
                 # 未开启时事件序列与之前完全一致
@@ -165,7 +185,7 @@ async def chat_stream(
                 disconnected = False
                 # 同渠道模型自动路由：开关关闭时完全等价于单模型行为
                 auto_routing = await routing_service.is_auto_routing_enabled(
-                    stream_session
+                    stream_session, user_id
                 )
                 agen = pipeline.call_provider_routed(ctx, enabled=auto_routing)
                 try:
@@ -181,11 +201,13 @@ async def chat_stream(
 
                 message = await pipeline.persist(ctx)
                 # 后台记忆提取：不 await，失败在任务内部自行记日志；
-                # disconnected（客户端中止）也同样触发
+                # disconnected（客户端中止）也同样触发；
+                # 后台任务自建 session 丢失请求上下文，user_id 必须显式传递
                 try:
                     if ctx.response_text:
                         asyncio.create_task(
                             memory_extractor.extract_after_reply(
+                                user_id=user_id,
                                 conversation_id=ctx.conversation_id,
                                 user_message=ctx.user_message,
                                 response_text=ctx.response_text,

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import clsx from 'clsx'
 import { providersApi } from '../../api/client'
-import type { Provider, ProviderModelInput } from '../../api/types'
+import type { CapabilityTag, Provider, ProviderModelInput } from '../../api/types'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { toast } from '../../stores/toastStore'
 
@@ -14,13 +14,28 @@ interface ProviderFormProps {
 const inputCls =
   'w-full rounded-xl border border-neutral-300 bg-white px-3 py-2 text-sm text-neutral-800 outline-none transition-colors placeholder:text-neutral-400 focus:border-violet-400 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 dark:focus:border-violet-500'
 
+// 能力标签选项（智能选模用，中文 ↔ 契约枚举值）
+const CAPABILITY_OPTIONS: { value: CapabilityTag; label: string }[] = [
+  { value: 'code', label: '代码' },
+  { value: 'writing', label: '文案' },
+  { value: 'long_text', label: '长文' },
+  { value: 'reasoning', label: '推理' },
+  { value: 'vision', label: '视觉' },
+  { value: 'general', label: '通用' },
+]
+
 export function ProviderForm({ provider, onClose }: ProviderFormProps) {
   const isEdit = provider !== null
   const [name, setName] = useState(provider?.name ?? '')
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? '')
   const [apiKey, setApiKey] = useState('')
   const [models, setModels] = useState<ProviderModelInput[]>(
-    provider?.models.map((m) => ({ name: m.name, label: m.label, isDefault: m.isDefault })) ?? [],
+    provider?.models.map((m) => ({
+      name: m.name,
+      label: m.label,
+      isDefault: m.isDefault,
+      capabilityTags: m.capabilityTags ?? null,
+    })) ?? [],
   )
   const [newModelName, setNewModelName] = useState('')
   const [validating, setValidating] = useState(false)
@@ -40,6 +55,20 @@ export function ProviderForm({ provider, onClose }: ProviderFormProps) {
 
   const setDefaultModel = (modelName: string) => {
     setModels((prev) => prev.map((m) => ({ ...m, isDefault: m.name === modelName })))
+  }
+
+  // 切换模型能力标签；空数组归一化为 null（表示用内置默认）
+  const toggleCapability = (modelName: string, tag: CapabilityTag) => {
+    setModels((prev) =>
+      prev.map((m) => {
+        if (m.name !== modelName) return m
+        const current = m.capabilityTags ?? []
+        const next = current.includes(tag)
+          ? current.filter((t) => t !== tag)
+          : [...current, tag]
+        return { ...m, capabilityTags: next.length > 0 ? next : null }
+      }),
+    )
   }
 
   const handleValidate = async () => {
@@ -171,28 +200,53 @@ export function ProviderForm({ provider, onClose }: ProviderFormProps) {
         <label className="mb-1 block text-xs font-medium text-neutral-500 dark:text-neutral-400">模型列表</label>
         <div className="flex flex-col gap-1.5">
           {models.map((m) => (
-            <div key={m.name} className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-1.5 dark:border-neutral-600">
-              <span className="flex-1 truncate font-mono text-xs text-neutral-700 dark:text-neutral-200">{m.name}</span>
-              <button
-                onClick={() => setDefaultModel(m.name)}
-                className={clsx(
-                  'rounded-md px-1.5 py-0.5 text-xs transition-colors',
-                  m.isDefault
-                    ? 'bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300'
-                    : 'text-neutral-400 hover:text-violet-500',
+            <div key={m.name} className="flex flex-col gap-1.5 rounded-xl border border-neutral-200 px-3 py-1.5 dark:border-neutral-600">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 truncate font-mono text-xs text-neutral-700 dark:text-neutral-200">{m.name}</span>
+                <button
+                  onClick={() => setDefaultModel(m.name)}
+                  className={clsx(
+                    'rounded-md px-1.5 py-0.5 text-xs transition-colors',
+                    m.isDefault
+                      ? 'bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-300'
+                      : 'text-neutral-400 hover:text-violet-500',
+                  )}
+                >
+                  {m.isDefault ? '默认' : '设默认'}
+                </button>
+                <button
+                  onClick={() => removeModel(m.name)}
+                  className="rounded-md p-0.5 text-neutral-400 transition-colors hover:text-red-500"
+                  title="移除"
+                >
+                  <svg viewBox="0 0 20 20" className="size-3.5 fill-current">
+                    <path d="M5.3 5.3a1 1 0 0 1 1.4 0L10 8.6l3.3-3.3a1 1 0 1 1 1.4 1.4L11.4 10l3.3 3.3a1 1 0 0 1-1.4 1.4L10 11.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L8.6 10 5.3 6.7a1 1 0 0 1 0-1.4z" />
+                  </svg>
+                </button>
+              </div>
+              {/* 能力标签多选 chip（智能选模用） */}
+              <div className="flex flex-wrap items-center gap-1">
+                {CAPABILITY_OPTIONS.map((opt) => {
+                  const selected = (m.capabilityTags ?? []).includes(opt.value)
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => toggleCapability(m.name, opt.value)}
+                      className={clsx(
+                        'rounded-full border px-2 py-0.5 text-xs transition-colors',
+                        selected
+                          ? 'border-violet-300 bg-violet-100 text-violet-600 dark:border-violet-700 dark:bg-violet-500/20 dark:text-violet-300'
+                          : 'border-neutral-200 text-neutral-400 hover:border-violet-300 hover:text-violet-500 dark:border-neutral-600',
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  )
+                })}
+                {(m.capabilityTags ?? []).length === 0 && (
+                  <span className="text-xs text-neutral-400 dark:text-neutral-500">留空使用内置默认</span>
                 )}
-              >
-                {m.isDefault ? '默认' : '设默认'}
-              </button>
-              <button
-                onClick={() => removeModel(m.name)}
-                className="rounded-md p-0.5 text-neutral-400 transition-colors hover:text-red-500"
-                title="移除"
-              >
-                <svg viewBox="0 0 20 20" className="size-3.5 fill-current">
-                  <path d="M5.3 5.3a1 1 0 0 1 1.4 0L10 8.6l3.3-3.3a1 1 0 1 1 1.4 1.4L11.4 10l3.3 3.3a1 1 0 0 1-1.4 1.4L10 11.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L8.6 10 5.3 6.7a1 1 0 0 1 0-1.4z" />
-                </svg>
-              </button>
+              </div>
             </div>
           ))}
           <div className="flex gap-2">

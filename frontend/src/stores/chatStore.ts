@@ -21,6 +21,8 @@ interface ChatState {
   searchNotice: SearchNoticeReason | null
   // 发送失败且未落库时回填输入框的内容（ChatInput 消费后清除）
   pendingInput: string | null
+  // 智能选模防重复弹提示：记录本会话上次已提示的模型（切会话时清空）
+  lastAutoModelNotified: string | null
 
   loadConversations: (q?: string) => Promise<void>
   setSearchQuery: (q: string) => void
@@ -35,6 +37,16 @@ interface ChatState {
   stopStreaming: () => void
   regenerate: () => Promise<void>
   editMessage: (id: string, content: string) => Promise<void>
+}
+
+// 智能选模任务类型的中文映射（未知类型回退原文）
+const TASK_TYPE_LABELS: Record<string, string> = {
+  code: '代码',
+  writing: '文案',
+  long_text: '长文',
+  reasoning: '推理',
+  vision: '图片',
+  general: '通用',
 }
 
 // 本地占位 ID 前缀，done 后会被服务端数据替换
@@ -107,6 +119,14 @@ export const useChatStore = create<ChatState>((set, get) => {
           } else if (event.type === 'modelSwitch') {
             // 同渠道自动路由：提示用户已切换到备用模型
             toast.info(`模型 ${event.from} 暂不可用，已自动切换到 ${event.to}`)
+          } else if (event.type === 'autoModel') {
+            // 智能选模：同一会话连续选中相同模型不重复弹
+            if (get().lastAutoModelNotified !== event.model) {
+              set({ lastAutoModelNotified: event.model })
+              toast.info(
+                `已为你选择 ${event.model}（${TASK_TYPE_LABELS[event.taskType] ?? event.taskType}）`,
+              )
+            }
           } else if (event.type === 'sources') {
             set((s) => ({
               messages: s.messages.map((m) =>
@@ -172,6 +192,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     searchStage: null,
     searchNotice: null,
     pendingInput: null,
+    lastAutoModelNotified: null,
 
     loadConversations: async (q) => {
       set({ conversationsLoading: true, conversationsError: null })
@@ -195,6 +216,7 @@ export const useChatStore = create<ChatState>((set, get) => {
           conversations: [conv, ...s.conversations],
           currentId: conv.id,
           messages: [],
+          lastAutoModelNotified: null,
         }))
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '新建对话失败')
@@ -204,10 +226,16 @@ export const useChatStore = create<ChatState>((set, get) => {
     selectConversation: async (id) => {
       if (get().streaming) get().stopStreaming()
       if (id === null) {
-        set({ currentId: null, messages: [], searchNotice: null })
+        set({ currentId: null, messages: [], searchNotice: null, lastAutoModelNotified: null })
         return
       }
-      set({ currentId: id, messages: [], messagesLoading: true, searchNotice: null })
+      set({
+        currentId: id,
+        messages: [],
+        messagesLoading: true,
+        searchNotice: null,
+        lastAutoModelNotified: null,
+      })
       try {
         const messages = await conversationsApi.messages(id)
         if (get().currentId === id) set({ messages, messagesLoading: false })
@@ -233,7 +261,10 @@ export const useChatStore = create<ChatState>((set, get) => {
         await conversationsApi.remove(id)
         set((s) => ({
           conversations: s.conversations.filter((c) => c.id !== id),
-          ...(s.currentId === id ? { currentId: null, messages: [] } : {}),
+          // 删除当前活跃会话时同步重置智能选模提示记录
+          ...(s.currentId === id
+            ? { currentId: null, messages: [], lastAutoModelNotified: null }
+            : {}),
         }))
         toast.success('会话已删除')
       } catch (err) {
@@ -266,6 +297,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             conversations: [conv, ...s.conversations],
             currentId: conv.id,
             messages: [],
+            lastAutoModelNotified: null,
           }))
         } catch (err) {
           toast.error(err instanceof Error ? err.message : '创建会话失败')

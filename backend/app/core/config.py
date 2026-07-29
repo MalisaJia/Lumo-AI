@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     master_key: str = ""
     # SSRF 例外开关：自建 SearXNG 常部署在 127.0.0.1，置 true 放行私网 searxngUrl
     allow_private_searxng: bool = False
+    # 多用户鉴权总开关：false 时休眠，所有请求归属 default_user_id（本机零变化）
+    auth_enabled: bool = False
+    # 单用户模式下的默认用户 ID
+    default_user_id: str = "local"
+    # JWT 有效期（天）
+    jwt_expire_days: int = 30
+    # CORS 允许的来源（逗号分隔多源）
+    cors_origins: str = "http://localhost:5173"
 
 
 settings = Settings()

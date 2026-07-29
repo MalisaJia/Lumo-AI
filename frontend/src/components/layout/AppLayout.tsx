@@ -16,10 +16,11 @@ export function AppLayout() {
   const theme = useSettingsStore((s) => s.theme)
   const settingsOpen = useSettingsStore((s) => s.settingsOpen)
 
-  // 首次加载会话列表与服务商
+  // 首次加载会话列表、服务商与模型路由设置
   useEffect(() => {
     useChatStore.getState().loadConversations()
     useSettingsStore.getState().loadProviders()
+    useSettingsStore.getState().loadRoutingSettings()
   }, [])
 
   return (

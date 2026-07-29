@@ -8,15 +8,22 @@ export function ModelSelector() {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const providers = useSettingsStore((s) => s.providers)
+  const smartSelectionEnabled = useSettingsStore(
+    (s) => s.routingSettings?.smartSelectionEnabled ?? false,
+  )
   const currentId = useChatStore((s) => s.currentId)
   const conversations = useChatStore((s) => s.conversations)
 
   const conv = conversations.find((c) => c.id === currentId)
+  const isAuto = conv?.modelName === 'auto'
   const currentProvider = providers.find((p) => p.id === conv?.providerId)
   const currentModel = currentProvider?.models.find((m) => m.name === conv?.modelName)
-  const label = currentModel
-    ? currentModel.label || currentModel.name
-    : conv?.modelName || '选择模型'
+  // 自动模式优先：'auto' 不是真实模型名，避免回退展示裸字符串
+  const label = isAuto
+    ? '✨ 自动'
+    : currentModel
+      ? currentModel.label || currentModel.name
+      : conv?.modelName || '选择模型'
 
   useEffect(() => {
     if (!open) return
@@ -40,7 +47,7 @@ export function ModelSelector() {
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
       >
-        {currentProvider && (
+        {!isAuto && currentProvider && (
           <span className="text-neutral-400 dark:text-neutral-500">{currentProvider.name} /</span>
         )}
         <span>{label}</span>
@@ -56,7 +63,27 @@ export function ModelSelector() {
               暂无可用模型，请先在设置中添加服务商
             </p>
           ) : (
-            providers.map((p) => (
+            <>
+              {/* 智能选模开启时顶部固定「自动」项（providerId 用当前会话的或第一个服务商） */}
+              {smartSelectionEnabled && (
+                <button
+                  onClick={() => handleSelect(conv?.providerId ?? providers[0].id, 'auto')}
+                  className={clsx(
+                    'mb-1 flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                    isAuto
+                      ? 'bg-violet-50 text-violet-600 dark:bg-violet-500/15 dark:text-violet-300'
+                      : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-700',
+                  )}
+                >
+                  <span className="truncate">✨ 自动选择</span>
+                  {isAuto && (
+                    <svg viewBox="0 0 20 20" className="size-4 shrink-0 fill-current">
+                      <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0z" />
+                    </svg>
+                  )}
+                </button>
+              )}
+              {providers.map((p) => (
               <div key={p.id} className="mb-1 last:mb-0">
                 <div className="px-2.5 py-1 text-xs font-semibold text-neutral-400 dark:text-neutral-500">
                   {p.name}
@@ -84,7 +111,8 @@ export function ModelSelector() {
                   )
                 })}
               </div>
-            ))
+              ))}
+            </>
           )}
         </div>
       )}
