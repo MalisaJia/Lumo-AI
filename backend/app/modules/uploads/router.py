@@ -1,4 +1,4 @@
-"""附件上传（图片/文档）：白名单校验 + 本地磁盘存储（backend/uploads/）。"""
+"""附件上传（图片/文档）：白名单校验 + 本地磁盘存储（DATA_DIR/uploads/）。"""
 
 import uuid
 from pathlib import Path
@@ -6,13 +6,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from app.core.auth import get_current_user_id
-from app.core.config import BACKEND_DIR
+from app.core.config import DATA_DIR
 from app.modules.uploads.extractor import DOC_EXTENSIONS
 from app.schemas import UploadOut
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
-UPLOAD_DIR = BACKEND_DIR / "uploads"
+UPLOAD_DIR = DATA_DIR / "uploads"
 
 MAX_SIZE = 10 * 1024 * 1024  # 10MB
 

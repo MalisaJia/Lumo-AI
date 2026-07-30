@@ -1,0 +1,19 @@
+appId: com.lumoai.desktop
+productName: "Lumo AI"
+directories:
+  output: release
+files:
+  - main.js
+  - package.json
+extraResources:
+  - from: "../backend/dist/lumo_backend"
+    to: "backend"
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "Lumo AI"

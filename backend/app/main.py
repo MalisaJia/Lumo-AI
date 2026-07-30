@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
@@ -23,6 +24,10 @@ from app.modules.uploads.router import UPLOAD_DIR
 from app.modules.uploads.router import router as uploads_router
 
 logger = logging.getLogger(__name__)
+
+# Windows 注册表可能把 .js 的 Content-Type 改成 text/plain，导致打包后前端模块脚本被浏览器拒绝
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
 
 
 def _alembic_head() -> str | None:
@@ -136,3 +141,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# 桌面版/生产模式：条件挂载前端静态文件（SPA）。
+# FastAPI 中路由优先于 mount 匹配，但 "/" 挂载仍放在所有路由定义之后保险。
+# 依次探测：PyInstaller 打包产物内的 frontend_dist/ -> 仓库内 frontend/dist/；
+# 都不存在则不挂载（dev 模式走 vite 开发服务器）。
+for _frontend_dir in (
+    BACKEND_DIR / "frontend_dist",
+    BACKEND_DIR.parent / "frontend" / "dist",
+):
+    if _frontend_dir.is_dir():
+        app.mount(
+            "/",
+            StaticFiles(directory=str(_frontend_dir), html=True),
+            name="frontend",
+        )
+        logger.info("前端静态文件已挂载：%s", _frontend_dir)
+        break

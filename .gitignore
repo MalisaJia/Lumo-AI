@@ -18,6 +18,13 @@ backend/uploads/
 # Build output
 dist/
 
+# Desktop packaging artifacts
+backend/dist/
+backend/build/
+backend/frontend_dist/
+desktop/node_modules/
+desktop/release/
+
 # Environment & secrets
 .env
 .env.*

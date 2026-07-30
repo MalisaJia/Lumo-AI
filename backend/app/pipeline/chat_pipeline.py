@@ -20,7 +20,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import BACKEND_DIR
+from app.core.config import DATA_DIR
 from app.core.crypto import decrypt_key
 from app.models import Conversation, Memory, Message, Model, Provider
 from app.modules.conversations import service as conv_service
@@ -53,7 +53,7 @@ def _in_cooldown(provider_id: str, model_name: str) -> bool:
 IMAGE_MAX_SIDE = 1568
 IMAGE_JPEG_QUALITY = 85
 
-UPLOAD_DIR = BACKEND_DIR / "uploads"
+UPLOAD_DIR = DATA_DIR / "uploads"
 
 
 class PipelineError(Exception):

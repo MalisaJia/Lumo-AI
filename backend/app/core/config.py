@@ -1,3 +1,4 @@
+import os
 import secrets
 from pathlib import Path
 
@@ -5,11 +6,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/ 目录（config.py 位于 backend/app/core/ 下）
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-ENV_FILE = BACKEND_DIR / ".env"
+# 可写数据目录（db/.env/uploads 所在）：Electron 桌面版通过 LUMO_DATA_DIR
+# 重定向到 %APPDATA%，未设置时回退 BACKEND_DIR（本地开发行为零变化）
+DATA_DIR = (
+    Path(os.environ["LUMO_DATA_DIR"]) if os.environ.get("LUMO_DATA_DIR") else BACKEND_DIR
+)
+ENV_FILE = DATA_DIR / ".env"
 
 
 def _ensure_master_key() -> None:
-    """若 backend/.env 缺少非空的 MASTER_KEY，首次启动自动生成 32 字节随机 hex 并写入。"""
+    """若 DATA_DIR/.env 缺少非空的 MASTER_KEY，首次启动自动生成 32 字节随机 hex 并写入。"""
     content = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
     lines = content.splitlines()
     for line in lines:
@@ -29,6 +35,8 @@ def _ensure_master_key() -> None:
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# 确保数据目录存在（来自 LUMO_DATA_DIR 时首次启动需创建；BACKEND_DIR 本就存在，无害）
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 _ensure_master_key()
 
 
@@ -39,8 +47,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 默认使用 backend/lumo.db 的绝对路径，避免受启动时工作目录影响
-    database_url: str = f"sqlite+aiosqlite:///{(BACKEND_DIR / 'lumo.db').as_posix()}"
+    # 默认使用 DATA_DIR/lumo.db 的绝对路径，避免受启动时工作目录影响
+    database_url: str = f"sqlite+aiosqlite:///{(DATA_DIR / 'lumo.db').as_posix()}"
     port: int = 8000
     master_key: str = ""
     # SSRF 例外开关：自建 SearXNG 常部署在 127.0.0.1，置 true 放行私网 searxngUrl
