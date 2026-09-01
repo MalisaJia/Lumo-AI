@@ -6,6 +6,7 @@ import { uploadsApi } from '../../api/client'
 import type { Attachment } from '../../api/types'
 import { useChatStore } from '../../stores/chatStore'
 import { toast } from '../../stores/toastStore'
+import { PptDialog } from './PptDialog'
 
 const MAX_FILES = 4
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 单文件 10MB（与后端一致）
@@ -41,6 +42,7 @@ let fileSeq = 1
 export function ChatInput() {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<PendingFile[]>([])
+  const [pptDialogOpen, setPptDialogOpen] = useState(false)
   const streaming = useChatStore((s) => s.streaming)
   const webSearchEnabled = useChatStore((s) => s.webSearchEnabled)
   const pendingInput = useChatStore((s) => s.pendingInput)
@@ -301,11 +303,28 @@ export function ChatInput() {
               e.target.value = ''
             }}
           />
+          <button
+            onClick={() => setPptDialogOpen(true)}
+            title="制作 PPT"
+            className="flex items-center gap-1.5 rounded-full border border-neutral-300 px-2.5 py-1 text-xs text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-300"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current" strokeWidth="1.8">
+              <rect x="4" y="2" width="16" height="20" rx="2" />
+              <path d="M8 7h8M8 11h8M8 15h4" />
+            </svg>
+            制作 PPT
+          </button>
         </div>
       </div>
       <p className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-neutral-400">
         内容由 AI 生成，请注意甄别
       </p>
+      {pptDialogOpen && (
+        <PptDialog
+          initialReference={value}
+          onClose={() => setPptDialogOpen(false)}
+        />
+      )}
     </div>
   )
 }

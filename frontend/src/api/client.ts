@@ -14,6 +14,7 @@ import type {
   SearchSettingsUpdateInput,
   StreamChatParams,
   StreamEvent,
+  ToolsSettings,
   UploadResult,
   ValidateResult,
 } from './types'
@@ -95,6 +96,23 @@ export const conversationsApi = {
     }),
   remove: (id: string) => request<void>(`/api/conversations/${id}`, { method: 'DELETE' }),
   messages: (id: string) => request<Message[]>(`/api/conversations/${id}/messages`),
+  // 导出会话为 PDF/PPTX：响应是二进制文件，不走通用 request（那个只处理 JSON）
+  export: async (id: string, format: 'pdf' | 'pptx'): Promise<Blob> => {
+    let res: Response
+    try {
+      res = await fetch(`/api/conversations/${id}/export?format=${format}`, {
+        method: 'POST',
+        headers: authHeaders(),
+      })
+    } catch {
+      throw new ApiError(0, '网络请求失败，请检查后端服务是否已启动')
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: '导出失败' }))
+      throw new ApiError(res.status, typeof err?.detail === 'string' ? err.detail : '导出失败')
+    }
+    return res.blob()
+  },
 }
 
 // ---------- Messages ----------
@@ -147,6 +165,12 @@ export const settingsApi = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  getTools: () => request<ToolsSettings>('/api/settings/tools'),
+  updateTools: (body: ToolsSettings) =>
+    request<ToolsSettings>('/api/settings/tools', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 }
 
 // ---------- 长期记忆 ----------
@@ -169,6 +193,28 @@ export const memoryApi = {
   update: (id: string, body: { content?: string; tags?: string[]; isEnabled?: boolean }) =>
     request<MemoryItem>(`/api/memories/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   remove: (id: string) => request<void>(`/api/memories/${id}`, { method: 'DELETE' }),
+}
+
+// ---------- PPT Generation ----------
+export const pptApi = {
+  // 生成 PPT：响应是二进制文件，不走通用 request（那个只处理 JSON）
+  generate: async (body: { topic: string; referenceText?: string; template?: string }): Promise<Blob> => {
+    let res: Response
+    try {
+      res = await fetch('/api/ppt/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify(body),
+      })
+    } catch {
+      throw new ApiError(0, '网络请求失败，请检查后端服务是否已启动')
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'PPT 生成失败' }))
+      throw new ApiError(res.status, typeof err?.detail === 'string' ? err.detail : 'PPT 生成失败')
+    }
+    return res.blob()
+  },
 }
 
 // ---------- 流式聊天 ----------

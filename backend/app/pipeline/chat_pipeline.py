@@ -40,9 +40,13 @@ _model_cooldowns: dict[tuple[str, str], float] = {}
 
 
 def _set_cooldown(provider_id: str, model_name: str) -> None:
-    _model_cooldowns[(provider_id, model_name)] = (
-        time.monotonic() + MODEL_COOLDOWN_SECONDS
-    )
+    now = time.monotonic()
+    # 写入前顺带清理已过期条目，避免冷却表只增不减（长期运行内存泄漏）；
+    # 本函数无 await，在事件循环内为原子操作，无需额外加锁
+    expired = [key for key, deadline in _model_cooldowns.items() if deadline <= now]
+    for key in expired:
+        del _model_cooldowns[key]
+    _model_cooldowns[(provider_id, model_name)] = now + MODEL_COOLDOWN_SECONDS
 
 
 def _in_cooldown(provider_id: str, model_name: str) -> bool:

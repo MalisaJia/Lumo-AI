@@ -15,11 +15,14 @@ from app.modules.auth.router import router as auth_router
 from app.modules.chat.router import router as chat_router
 from app.modules.conversations.router import messages_router
 from app.modules.conversations.router import router as conversations_router
+from app.modules.export.router import router as export_router
 from app.modules.memory.router import router as memories_router
 from app.modules.memory.router import settings_router as memory_settings_router
+from app.modules.ppt_master.router import router as ppt_router
 from app.modules.providers.router import router as providers_router
 from app.modules.routing.router import router as routing_settings_router
 from app.modules.search.router import router as settings_router
+from app.modules.tools.router import router as tools_settings_router
 from app.modules.uploads.router import UPLOAD_DIR
 from app.modules.uploads.router import router as uploads_router
 
@@ -123,9 +126,12 @@ app.include_router(messages_router)
 app.include_router(chat_router)
 app.include_router(settings_router)
 app.include_router(routing_settings_router)
+app.include_router(tools_settings_router)
 app.include_router(memory_settings_router)
 app.include_router(memories_router)
 app.include_router(uploads_router)
+app.include_router(export_router)
+app.include_router(ppt_router)
 
 # 上传图片静态服务（目录不存在时自动创建）
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -134,7 +140,11 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """全局兜底：未捕获异常统一返回 {detail}。"""
+    """全局兜底：未捕获异常统一返回 {detail}，并记录完整堆栈便于排查。"""
+    # handler 不一定处于 except 上下文中，显式传 exc_info 确保堆栈被记录
+    logger.exception(
+        "未处理异常：%s %s", request.method, request.url.path, exc_info=exc
+    )
     return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
 
 

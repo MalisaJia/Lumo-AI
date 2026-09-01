@@ -79,10 +79,19 @@ async def update_provider(
         raise HTTPException(status_code=404, detail="Provider 不存在")
     # 若更换了 Key 或 baseUrl，则用最终生效的组合重新验证
     if body.api_key is not None or body.base_url is not None:
-        from app.core.crypto import decrypt_key
+        from app.core.crypto import DecryptionError, decrypt_key
 
         effective_url = body.base_url or provider.base_url
-        effective_key = body.api_key or decrypt_key(provider.encrypted_api_key)
+        if body.api_key:
+            effective_key = body.api_key
+        else:
+            try:
+                effective_key = decrypt_key(provider.encrypted_api_key)
+            except DecryptionError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="已保存的 API Key 解密失败，请重新填写并保存",
+                ) from exc
         result = await service.validate_upstream(effective_url, effective_key)
         if not result["valid"]:
             raise HTTPException(

@@ -14,6 +14,10 @@ _NONCE_SIZE = 12  # AESGCM 推荐的 96-bit nonce
 _warned_empty_master_key = False
 
 
+class DecryptionError(ValueError):
+    """API Key 密文格式非法或解密失败（继承 ValueError，兼容既有 except 处理）。"""
+
+
 def _aes_key() -> bytes:
     """从 MASTER_KEY 派生 32 字节 AES 密钥。
 
@@ -50,12 +54,22 @@ def encrypt_key(plain: str) -> str:
 
 
 def decrypt_key(token: str) -> str:
-    """解密 encrypt_key 产生的 "base64(nonce):base64(cipher)" 字符串。"""
-    nonce_b64, cipher_b64 = token.split(":", 1)
-    nonce = base64.b64decode(nonce_b64)
-    cipher = base64.b64decode(cipher_b64)
-    plain = AESGCM(_aes_key()).decrypt(nonce, cipher, None)
-    return plain.decode("utf-8")
+    """解密 encrypt_key 产生的 "base64(nonce):base64(cipher)" 字符串。
+
+    格式非法（缺少 ":"、分段为空、base64 损坏、校验失败等）统一抛 DecryptionError。
+    """
+    if not isinstance(token, str) or ":" not in token:
+        raise DecryptionError("API Key 密文格式非法：缺少 ':' 分隔符")
+    nonce_b64, _, cipher_b64 = token.partition(":")
+    if not nonce_b64 or not cipher_b64:
+        raise DecryptionError("API Key 密文格式非法：分段为空")
+    try:
+        nonce = base64.b64decode(nonce_b64)
+        cipher = base64.b64decode(cipher_b64)
+        plain = AESGCM(_aes_key()).decrypt(nonce, cipher, None)
+        return plain.decode("utf-8")
+    except Exception as exc:
+        raise DecryptionError("API Key 密文解密失败") from exc
 
 
 def mask_key(plain: str) -> str:

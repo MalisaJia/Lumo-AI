@@ -5,6 +5,7 @@ import { ToastContainer } from './ToastContainer'
 import { MessageList } from '../chat/MessageList'
 import { ChatInput } from '../chat/ChatInput'
 import { ModelSelector } from '../chat/ModelSelector'
+import { ExportButton } from '../chat/ExportButton'
 import { StartScreen } from '../chat/StartScreen'
 import { SettingsModal } from '../settings/SettingsModal'
 import { useChatStore } from '../../stores/chatStore'
@@ -43,6 +44,8 @@ export function AppLayout() {
           <ModelSelector />
 
           <div className="flex-1" />
+
+          {currentId && <ExportButton />}
 
           {!currentId && (
             <span className="bg-gradient-to-r from-violet-500 to-blue-500 bg-clip-text text-sm font-semibold text-transparent">

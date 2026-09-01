@@ -47,3 +47,12 @@ tmp/
 *.db.bak
 diff_tmp.txt
 step*.png
+
+# External PPT tool (not part of this repo)
+ppt-master/
+
+# Test / verification artifacts
+backend/_ppt_e2e_out.pptx
+test_export.pptx
+export_button_test.png
+export_menu_test.png

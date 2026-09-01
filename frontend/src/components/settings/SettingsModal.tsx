@@ -309,6 +309,71 @@ function RoutingSettingsSection() {
   )
 }
 
+// Agent 工具（skills）：允许模型自动调用计算器/时间/联网搜索/制作 PPT 等工具
+function AgentToolsSettingsSection() {
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [enabled, setEnabled] = useState(true)
+
+  useEffect(() => {
+    settingsApi
+      .getTools()
+      .then((s) => setEnabled(s.enabled))
+      .catch((err) => {
+        toast.error(err instanceof Error ? err.message : '加载工具设置失败')
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  const handleToggle = async () => {
+    setSaving(true)
+    try {
+      const updated = await settingsApi.updateTools({ enabled: !enabled })
+      setEnabled(updated.enabled)
+      toast.success('工具设置已保存')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section>
+      <h3 className="mb-2 text-sm font-semibold text-neutral-500 dark:text-neutral-400">Agent 工具</h3>
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 px-3 py-2.5 dark:border-neutral-700">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm">允许模型自动调用工具</span>
+          <span className="text-xs text-neutral-400 dark:text-neutral-500">
+            计算、查询时间、联网搜索、制作 PPT 等，由模型按需静默调用
+          </span>
+        </div>
+        {loading ? (
+          <span className="text-sm text-neutral-400">加载中…</span>
+        ) : (
+          <button
+            onClick={handleToggle}
+            disabled={saving}
+            className={clsx(
+              'relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50',
+              enabled ? 'bg-gradient-to-r from-violet-500 to-blue-500' : 'bg-neutral-300',
+            )}
+            role="switch"
+            aria-checked={enabled}
+          >
+            <span
+              className={clsx(
+                'absolute top-0.5 size-5 rounded-full bg-white shadow transition-all',
+                enabled ? 'left-[22px]' : 'left-0.5',
+              )}
+            />
+          </button>
+        )}
+      </div>
+    </section>
+  )
+}
+
 // 长期记忆设置：总开关 + 记忆列表（启停/编辑/删除/手动添加）
 const MEMORY_TYPE_BADGES: Record<MemoryItem['memoryType'], { label: string; className: string }> = {
   fact: {
@@ -729,6 +794,9 @@ export function SettingsModal() {
 
               {/* 模型路由 */}
               <RoutingSettingsSection />
+
+              {/* Agent 工具 */}
+              <AgentToolsSettingsSection />
 
               {/* 长期记忆 */}
               <MemorySettingsSection />

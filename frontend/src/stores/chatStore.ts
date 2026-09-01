@@ -31,6 +31,7 @@ interface ChatState {
   selectConversation: (id: string | null) => Promise<void>
   renameConversation: (id: string, title: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
+  exportConversation: (format: 'pdf' | 'pptx') => Promise<void>
   updateConversationModel: (providerId: string, modelName: string) => Promise<void>
   sendMessage: (content: string, attachments?: Attachment[]) => Promise<void>
   clearPendingInput: () => void
@@ -269,6 +270,27 @@ export const useChatStore = create<ChatState>((set, get) => {
         toast.success('会话已删除')
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '删除失败')
+      }
+    },
+
+    exportConversation: async (format) => {
+      const id = get().currentId
+      if (!id) return
+      const conv = get().conversations.find((c) => c.id === id)
+      try {
+        const blob = await conversationsApi.export(id, format)
+        // 通过临时 <a download> 触发浏览器下载，文件名用会话标题
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${conv?.title || 'conversation'}.${format}`
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        toast.success(`已导出为 ${format.toUpperCase()}`)
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '导出失败')
       }
     },
 

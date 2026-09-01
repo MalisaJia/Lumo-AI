@@ -159,6 +159,11 @@ export interface RoutingSettings {
   smartSelectionEnabled: boolean
 }
 
+// Agent 工具（skills）设置（GET/PUT /api/settings/tools，默认开启）
+export interface ToolsSettings {
+  enabled: boolean
+}
+
 // 长期记忆条目（GET /api/memories）
 export interface MemoryItem {
   id: string

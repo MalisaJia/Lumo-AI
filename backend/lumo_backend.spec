@@ -40,6 +40,9 @@ hiddenimports = [
     *collect_submodules("alembic"),
     # pydantic v2 依赖的编译核心
     "pydantic_core",
+    # 会话导出（PPTX/PDF 生成库）
+    *collect_submodules("pptx"),
+    *collect_submodules("fpdf"),
 ]
 
 datas = [
@@ -47,6 +50,8 @@ datas = [
     (os.path.join(BACKEND_DIR, "alembic"), "alembic"),
     # pydantic/alembic 附带的数据文件（版本元数据、mako 模板等）
     *collect_data_files("alembic"),
+    # fpdf2 附带的字体/数据文件
+    *collect_data_files("fpdf"),
 ]
 
 # 前端构建产物仅在构建脚本拷贝后存在；首次干跑（无前端）时容错跳过

@@ -15,6 +15,8 @@ from app.modules.memory import extractor as memory_extractor
 from app.modules.memory import service as memory_service
 from app.modules.routing import service as routing_service
 from app.modules.search import service as search_service
+from app.modules.tools import executor as tools_executor
+from app.modules.tools import get_registry, service as tools_service
 from app.pipeline.chat_pipeline import ChatContext, ChatPipeline, PipelineError
 from app.schemas import ChatStreamRequest
 
@@ -187,13 +189,34 @@ async def chat_stream(
                 auto_routing = await routing_service.is_auto_routing_enabled(
                     stream_session, user_id
                 )
-                agen = pipeline.call_provider_routed(ctx, enabled=auto_routing)
+                # Agent 工具：开关开启且非 regenerate 时走工具循环；
+                # 前置搜索已产出 sources 时剔除 web_search 避免双路搜索
+                agen = None
+                if not body.regenerate and await tools_service.is_tools_enabled(
+                    stream_session, user_id
+                ):
+                    exclude = {"web_search"} if ctx.extra.get("sources") else set()
+                    tools_payload = get_registry().build_openai_tools(exclude)
+                    if tools_payload:
+                        agen = tools_executor.stream_with_tools(
+                            pipeline,
+                            ctx,
+                            tools_payload,
+                            is_disconnected=request.is_disconnected,
+                            routing_enabled=auto_routing,
+                        )
+                if agen is None:
+                    agen = pipeline.call_provider_routed(ctx, enabled=auto_routing)
                 try:
                     async for event in agen:
                         if await request.is_disconnected():
                             # 客户端断开：取消上游，但仍保存已累积内容
                             disconnected = True
                             break
+                        if event.get("type") == "keepalive":
+                            # 长工具等待保活：SSE 注释，前端解析器天然忽略
+                            yield ":keepalive\n\n"
+                            continue
                         # 事件本身已是 {"type": "chunk"|"modelSwitch", ...}
                         yield _sse(event)
                 finally:

@@ -224,6 +224,16 @@ class RoutingSettingsUpdate(CamelModel):
     smart_selection_enabled: bool | None = None
 
 
+class ToolsSettingsOut(CamelModel):
+    """GET/PUT 响应：Agent 工具（skills）开关。"""
+
+    enabled: bool = True
+
+
+class ToolsSettingsUpdate(CamelModel):
+    enabled: bool
+
+
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
