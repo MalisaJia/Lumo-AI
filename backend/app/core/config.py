@@ -1,5 +1,7 @@
+import asyncio
 import os
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +42,22 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 _ensure_master_key()
 
 
+@dataclass
+class AgentConfig:
+    """Per-run configuration for the observable agent tool loop."""
+
+    max_tool_rounds: int = 30
+    max_tool_result_chars: int = 16000
+    allowed_tools: list[str] | None = None
+    workspace_dir: str | None = None
+    context_max_tokens: int = 128000
+    context_compress_threshold: float = 0.8
+    context_keep_recent: int = 10
+    cancellation_event: asyncio.Event | None = None
+    current_depth: int = 0
+    max_depth: int = 3
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -61,6 +79,16 @@ class Settings(BaseSettings):
     jwt_expire_days: int = 30
     # CORS 允许的来源（逗号分隔多源）
     cors_origins: str = "http://localhost:5173"
+
+    # --- Coding Agent ---
+    workspace_dir: str = "."
+    sandbox_allowed_dirs: str = ""
+    sandbox_blocked_commands: str = "rm -rf /,format,del /s,mkfs,dd if="
+    max_tool_rounds: int = 30
+    max_tool_result_chars: int = 16000
+
+    # --- MCP ---
+    mcp_config_path: str = ""  # Path to MCP servers JSON config file
 
 
 settings = Settings()

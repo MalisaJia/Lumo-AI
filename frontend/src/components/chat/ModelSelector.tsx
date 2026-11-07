@@ -9,12 +9,10 @@ export function ModelSelector() {
   const ref = useRef<HTMLDivElement>(null)
   const providers = useSettingsStore((s) => s.providers)
   const smartSelectionEnabled = useSettingsStore(
-    (s) => s.routingSettings?.smartSelectionEnabled ?? false,
+    (s) => s.routingSettings?.smartSelectionEnabled ?? true,
   )
   const currentId = useChatStore((s) => s.currentId)
-  const conversations = useChatStore((s) => s.conversations)
-
-  const conv = conversations.find((c) => c.id === currentId)
+  const conv = useChatStore((s) => s.currentConversation)
   const isAuto = conv?.modelName === 'auto'
   const currentProvider = providers.find((p) => p.id === conv?.providerId)
   const currentModel = currentProvider?.models.find((m) => m.name === conv?.modelName)

@@ -97,6 +97,13 @@ async def classify_by_llm(ctx: "ChatContext", user_message: str) -> str:
         max_tokens=10,
     )
     if not result:
+        logger.warning(
+            "Task classification returned no result; falling back to general "
+            "(conversation=%s, provider=%s, model=%s)",
+            ctx.conversation_id,
+            ctx.provider_id,
+            ctx.model_name,
+        )
         return "general"
     cleaned = result.strip().strip("\"'“”。.").lower()
     if cleaned in TASK_TYPES:
@@ -104,6 +111,13 @@ async def classify_by_llm(ctx: "ChatContext", user_message: str) -> str:
     for task_type in TASK_TYPES:
         if task_type in cleaned:
             return task_type
+    logger.warning(
+        "Task classification returned an invalid task type; falling back to general "
+        "(conversation=%s, provider=%s, model=%s)",
+        ctx.conversation_id,
+        ctx.provider_id,
+        ctx.model_name,
+    )
     return "general"
 
 

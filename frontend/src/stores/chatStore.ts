@@ -1,20 +1,49 @@
 // 会话与消息状态：加载/新建/重命名/删除/搜索、发送、停止、重新生成、编辑
 import { create } from 'zustand'
-import { ApiError, conversationsApi, memoryApi, messagesApi, streamChat } from '../api/client'
-import type { Attachment, Conversation, Message, SearchNoticeReason, SearchStage } from '../api/types'
+import {
+  ApiError,
+  conversationsApi,
+  getAgentProfiles,
+  memoryApi,
+  messagesApi,
+  streamChat,
+} from '../api/client'
+import type {
+  AgentProfile,
+  Attachment,
+  Conversation,
+  Message,
+  SearchNoticeReason,
+  SearchStage,
+} from '../api/types'
+import { useTaskStore } from './taskStore'
 import { toast } from './toastStore'
+
+export interface AgentStreamState {
+  agentId: string
+  taskId: string | null
+  agentType: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  streamingContent: string
+  currentTool: string | null
+}
 
 interface ChatState {
   conversations: Conversation[]
   conversationsLoading: boolean
   conversationsError: string | null
+  agentProfiles: AgentProfile[]
+  agentProfilesLoading: boolean
+  agentProfilesError: string | null
   searchQuery: string
   currentId: string | null
+  currentConversation: Conversation | null
   messages: Message[]
   messagesLoading: boolean
   streaming: boolean
   streamingContent: string
   abortController: AbortController | null
+  agentStreams: Map<string, AgentStreamState>
   webSearchEnabled: boolean
   searchStage: SearchStage | null
   // 当次流式会话的搜索降级提示（不持久化，下次生成/切会话时清除）
@@ -25,9 +54,10 @@ interface ChatState {
   lastAutoModelNotified: string | null
 
   loadConversations: (q?: string) => Promise<void>
+  loadAgentProfiles: () => Promise<void>
   setSearchQuery: (q: string) => void
   toggleWebSearch: () => void
-  createConversation: () => Promise<void>
+  createConversation: (agentType?: string) => Promise<void>
   selectConversation: (id: string | null) => Promise<void>
   renameConversation: (id: string, title: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
@@ -54,11 +84,127 @@ const TASK_TYPE_LABELS: Record<string, string> = {
 let tempSeq = 1
 const tempId = () => `temp-${tempSeq++}`
 
+const FILE_TREE_REFRESH_DEBOUNCE_MS = 250
+let fileTreeRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const pendingChangedFilePaths = new Set<string>()
+
+function normalizeFilePath(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  return normalized || '/'
+}
+
+function comparablePath(path: string): string {
+  const normalized = normalizeFilePath(path)
+  return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized
+}
+
+function resolveTreeParentPath(filePath: string, workspacePath: string): string | null {
+  const normalizedFilePath = normalizeFilePath(filePath)
+  const normalizedWorkspacePath = normalizeFilePath(workspacePath)
+  const workspaceBase = workspacePath.replace(/[\\/]+$/, '')
+  const absolute = normalizedFilePath.startsWith('/') || /^[a-z]:\//i.test(normalizedFilePath)
+
+  let relativeFilePath = normalizedFilePath
+  if (absolute) {
+    const comparableFilePath = comparablePath(normalizedFilePath)
+    const comparableWorkspacePath = comparablePath(normalizedWorkspacePath)
+    if (comparableFilePath === comparableWorkspacePath) return null
+    if (!comparableFilePath.startsWith(`${comparableWorkspacePath}/`)) return null
+    relativeFilePath = normalizedFilePath.slice(normalizedWorkspacePath.length + 1)
+  }
+
+  const separatorIndex = relativeFilePath.lastIndexOf('/')
+  const relativeParent = separatorIndex >= 0 ? relativeFilePath.slice(0, separatorIndex) : ''
+  return relativeParent ? `${workspaceBase}/${relativeParent}` : workspacePath
+}
+
+function scheduleFileTreeRefresh(filePath: string): void {
+  pendingChangedFilePaths.add(filePath)
+  if (fileTreeRefreshTimer) clearTimeout(fileTreeRefreshTimer)
+
+  fileTreeRefreshTimer = setTimeout(() => {
+    fileTreeRefreshTimer = null
+    const changedPaths = Array.from(pendingChangedFilePaths)
+    pendingChangedFilePaths.clear()
+
+    void import('./ideStore')
+      .then(async ({ useIdeStore }) => {
+        const { workspacePath, fileTree } = useIdeStore.getState()
+        if (!workspacePath) return
+
+        const parentPaths = new Set(
+          changedPaths
+            .map((path) => resolveTreeParentPath(path, workspacePath))
+            .filter((path): path is string => Boolean(path)),
+        )
+        const rootPath = comparablePath(workspacePath)
+        const refreshRoot =
+          fileTree.length === 0 ||
+          Array.from(parentPaths).some((path) => comparablePath(path) === rootPath)
+
+        if (refreshRoot) {
+          await useIdeStore.getState().refreshFileTree()
+        }
+
+        await Promise.all(
+          Array.from(parentPaths)
+            .filter((path) => comparablePath(path) !== rootPath)
+            .map((path) => useIdeStore.getState().loadTreeNode(path)),
+        )
+      })
+      .catch(() => {})
+  }, FILE_TREE_REFRESH_DEBOUNCE_MS)
+}
+
+function agentStoppedStatus(status?: string, reason?: string): AgentStreamState['status'] {
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return status
+  if (reason?.toLowerCase().includes('cancel')) return 'cancelled'
+  return reason ? 'failed' : 'completed'
+}
+
 export const useChatStore = create<ChatState>((set, get) => {
+  let conversationListRequest = 0
   // 返回拉到的消息列表；失败（如后端不可达、会话已删）返回 null 且保留本地消息
-  async function refreshMessages(conversationId: string): Promise<Message[] | null> {
+  async function refreshMessages(
+    conversationId: string,
+    pendingAssistant?: { message: Message; completedMessageId: string },
+  ): Promise<Message[] | null> {
     try {
-      const messages = await conversationsApi.messages(conversationId)
+      const serverMessages = await conversationsApi.messages(conversationId)
+      let messages = serverMessages
+
+      if (pendingAssistant) {
+        const { message, completedMessageId } = pendingAssistant
+        const completedIndex = completedMessageId
+          ? serverMessages.findIndex((item) => item.id === completedMessageId)
+          : -1
+        const lastIndex = serverMessages.length - 1
+        const contentMatchIndex =
+          lastIndex >= 0 &&
+          serverMessages[lastIndex].role === 'assistant' &&
+          serverMessages[lastIndex].content === message.content
+            ? lastIndex
+            : -1
+        const persistedIndex = completedIndex !== -1 ? completedIndex : contentMatchIndex
+
+        if (persistedIndex === -1) {
+          messages = [...serverMessages, message]
+        } else if (message.thinking || message.userQuestion || message.sources?.length) {
+          messages = serverMessages.map((item, index) =>
+            index === persistedIndex
+              ? {
+                  ...item,
+                  ...(message.thinking ? { thinking: message.thinking } : {}),
+                  ...(message.userQuestion ? { userQuestion: message.userQuestion } : {}),
+                  ...(message.sources?.length && !item.sources?.length
+                    ? { sources: message.sources }
+                    : {}),
+                }
+              : item,
+          )
+        }
+      }
+
       if (get().currentId === conversationId) set({ messages })
       return messages
     } catch (err) {
@@ -99,20 +245,84 @@ export const useChatStore = create<ChatState>((set, get) => {
     }))
 
     let acc = ''
+    let thinkingAcc = ''
+    let currentQuestion: Message['userQuestion']
+    let completedMessageId = ''
     let hadError = false
     try {
       await streamChat(
         params,
         (event) => {
           if (event.type === 'chunk') {
-            acc += event.content
+            const data = event.data ?? event
+            const content = data.content ?? ''
+            acc += content
             // 首个 chunk 到达后搜索阶段提示不再展示
             set({ streamingContent: acc, searchStage: null })
-            set((s) => ({
-              messages: s.messages.map((m) =>
-                m.id === placeholder.id ? { ...m, content: acc } : m,
-              ),
-            }))
+            set((s) => {
+              const next: Partial<ChatState> = {
+                messages: s.messages.map((m) =>
+                  m.id === placeholder.id ? { ...m, content: acc } : m,
+                ),
+              }
+              if (data.agentId && content) {
+                const current = s.agentStreams.get(data.agentId)
+                if (current) {
+                  const agentStreams = new Map(s.agentStreams)
+                  agentStreams.set(data.agentId, {
+                    ...current,
+                    streamingContent: current.streamingContent + content,
+                  })
+                  next.agentStreams = agentStreams
+                }
+              }
+              return next
+            })
+          } else if (event.type === 'thinking') {
+            const data = event.data ?? event
+            if (data.content) {
+              thinkingAcc += data.content
+              set((s) => ({
+                messages: s.messages.map((m) =>
+                  m.id === placeholder.id ? { ...m, thinking: thinkingAcc } : m,
+                ),
+              }))
+            }
+          } else if (event.type === 'askUser') {
+            const data = event.data ?? event
+            if (data.question && data.options?.length) {
+              currentQuestion = {
+                question: data.question,
+                options: data.options,
+                toolCallId: data.toolCallId,
+              }
+              set((s) => ({
+                messages: s.messages.map((m) =>
+                  m.id === placeholder.id ? { ...m, userQuestion: currentQuestion } : m,
+                ),
+              }))
+            }
+          } else if (event.type === 'confirmationRequest') {
+            const data = event.data ?? event
+            if (
+              typeof data.id === 'string' &&
+              typeof data.action === 'string' &&
+              typeof data.description === 'string' &&
+              data.risk_level
+            ) {
+              void import('./confirmationStore')
+                .then(({ useConfirmationStore }) =>
+                  useConfirmationStore.getState().setPending({
+                    id: data.id as string,
+                    action: data.action as string,
+                    description: data.description as string,
+                    risk_level: data.risk_level!,
+                    screenshot_base64: data.screenshot_base64,
+                    timestamp: Date.now(),
+                  }),
+                )
+                .catch(() => {})
+            }
           } else if (event.type === 'status') {
             set({ searchStage: event.stage })
           } else if (event.type === 'searchNotice') {
@@ -134,7 +344,128 @@ export const useChatStore = create<ChatState>((set, get) => {
                 m.id === placeholder.id ? { ...m, sources: event.sources } : m,
               ),
             }))
+          } else if (event.type === 'toolExecution') {
+            const lines: string[] = []
+            if (event.command) lines.push(`$ ${event.command}`)
+            if (event.output) lines.push(event.output)
+            if (lines.length) {
+              void import('./ideStore')
+                .then(({ useIdeStore }) => useIdeStore.getState().appendTerminalOutput(lines))
+                .catch(() => {})
+            }
+          } else if (event.type === 'fileChanged') {
+            const data = event.data ?? event
+            if (
+              data.path &&
+              typeof data.oldContent === 'string' &&
+              typeof data.newContent === 'string'
+            ) {
+              scheduleFileTreeRefresh(data.path as string)
+              void import('./ideStore')
+                .then(({ useIdeStore }) =>
+                  useIdeStore.getState().showDiff({
+                    path: data.path as string,
+                    oldContent: data.oldContent as string,
+                    newContent: data.newContent as string,
+                  }),
+                )
+                .catch(() => {})
+            }
+          } else if (event.type === 'taskCreated') {
+            const data = event.data ?? event
+            if (data.taskId) {
+              useTaskStore.getState().handleTaskCreated({
+                taskId: data.taskId,
+                parentTaskId: data.parentTaskId,
+                description: data.description ?? '',
+                conversationId: data.conversationId ?? conversationId,
+              })
+            }
+          } else if (event.type === 'taskStatusChanged') {
+            const data = event.data ?? event
+            if (data.taskId && data.status) {
+              useTaskStore.getState().handleTaskStatusChanged({
+                taskId: data.taskId,
+                status: data.status,
+                result: data.result,
+              })
+            }
+          } else if (event.type === 'agentStarted') {
+            const data = event.data ?? event
+            if (data.agentId) {
+              const agentId = data.agentId
+              const agentType = data.agentType ?? 'coding'
+              useTaskStore.getState().handleAgentStarted({
+                agentId,
+                taskId: data.taskId,
+                model: data.model,
+                agentType,
+              })
+              set((s) => {
+                const agentStreams = new Map(s.agentStreams)
+                agentStreams.set(agentId, {
+                  agentId,
+                  taskId: data.taskId ?? null,
+                  agentType,
+                  status: 'running',
+                  streamingContent: '',
+                  currentTool: null,
+                })
+                return { agentStreams }
+              })
+            }
+          } else if (event.type === 'agentStopped') {
+            const data = event.data ?? event
+            if (data.agentId) {
+              const agentId = data.agentId
+              useTaskStore.getState().handleAgentStopped({
+                agentId,
+                reason: data.reason,
+                status: data.status,
+                rounds: data.rounds,
+              })
+              set((s) => {
+                const current = s.agentStreams.get(agentId)
+                if (!current) return s
+                const agentStreams = new Map(s.agentStreams)
+                agentStreams.set(agentId, {
+                  ...current,
+                  status: agentStoppedStatus(data.status, data.reason),
+                  currentTool: null,
+                })
+                return { agentStreams }
+              })
+            }
+          } else if (event.type === 'toolStart') {
+            const data = event.data ?? event
+            if (data.agentId && data.toolName) {
+              const agentId = data.agentId
+              const toolName = data.toolName
+              useTaskStore.getState().handleToolStart({ agentId, toolName })
+              set((s) => {
+                const current = s.agentStreams.get(agentId)
+                if (!current) return s
+                const agentStreams = new Map(s.agentStreams)
+                agentStreams.set(agentId, { ...current, currentTool: toolName })
+                return { agentStreams }
+              })
+            }
+          } else if (event.type === 'toolEnd') {
+            const data = event.data ?? event
+            if (data.agentId && data.toolName) {
+              const agentId = data.agentId
+              const toolName = data.toolName
+              useTaskStore.getState().handleToolEnd({ agentId, toolName })
+              set((s) => {
+                const current = s.agentStreams.get(agentId)
+                if (!current || current.currentTool !== toolName) return s
+                const agentStreams = new Map(s.agentStreams)
+                agentStreams.set(agentId, { ...current, currentTool: null })
+                return { agentStreams }
+              })
+            }
           } else if (event.type === 'done') {
+            completedMessageId = event.messageId
             // 正常结束标记：服务端已落库（messageId/usage 可用），
             // 最终内容以流结束后的 refreshMessages 拉取为准
             // 后台记忆提取约需几秒：延迟一次性查询新增记忆，失败静默
@@ -156,24 +487,51 @@ export const useChatStore = create<ChatState>((set, get) => {
         controller.signal,
       )
     } finally {
-      set({ streaming: false, streamingContent: '', abortController: null, searchStage: null })
+      // Commit the accumulated payload to the placeholder before clearing stream-only state.
+      set((s) => ({
+        messages: s.messages.map((message) =>
+          message.id === placeholder.id
+            ? {
+                ...message,
+                content: acc,
+                ...(thinkingAcc ? { thinking: thinkingAcc } : {}),
+                ...(currentQuestion ? { userQuestion: currentQuestion } : {}),
+              }
+            : message,
+        ),
+        streaming: false,
+        streamingContent: '',
+        abortController: null,
+        searchStage: null,
+      }))
     }
 
-    const aborted = controller.signal.aborted
     if (hadError && !acc) {
       // 无任何内容且出错：移除空占位
       set((s) => ({ messages: s.messages.filter((m) => m.id !== placeholder.id) }))
     }
-    // 成功/失败/中断一律刷新，让界面消息 id 与数据库对齐（临时 id 被真实 id 替换）
-    const fresh = await refreshMessages(conversationId)
-    if (fresh && aborted && acc && fresh[fresh.length - 1]?.role !== 'assistant') {
-      // 停止时后端可能尚未落库已生成部分：保留本地气泡展示，下次刷新自动对齐
-      set((s) =>
-        s.currentId === conversationId
-          ? { messages: [...s.messages, { ...placeholder, content: acc }] }
-          : {},
-      )
+
+    const committedPlaceholder = get().messages.find((message) => message.id === placeholder.id)
+    const localAssistant = acc
+      ? {
+          ...(committedPlaceholder ?? placeholder),
+          id: completedMessageId || placeholder.id,
+          content: acc,
+          ...(thinkingAcc ? { thinking: thinkingAcc } : {}),
+          ...(currentQuestion ? { userQuestion: currentQuestion } : {}),
+        }
+      : undefined
+
+    // Give the persistence transaction a short head start after the done event.
+    if (completedMessageId) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 500))
     }
+
+    // Reconcile the server snapshot without dropping a completed local response that is not visible yet.
+    await refreshMessages(
+      conversationId,
+      localAssistant ? { message: localAssistant, completedMessageId } : undefined,
+    )
     // 生成后标题/updatedAt 可能变化，静默刷新会话列表
     get().loadConversations(get().searchQuery || undefined)
   }
@@ -182,13 +540,18 @@ export const useChatStore = create<ChatState>((set, get) => {
     conversations: [],
     conversationsLoading: false,
     conversationsError: null,
+    agentProfiles: [],
+    agentProfilesLoading: false,
+    agentProfilesError: null,
     searchQuery: '',
     currentId: null,
+    currentConversation: null,
     messages: [],
     messagesLoading: false,
     streaming: false,
     streamingContent: '',
     abortController: null,
+    agentStreams: new Map(),
     webSearchEnabled: false,
     searchStage: null,
     searchNotice: null,
@@ -196,13 +559,33 @@ export const useChatStore = create<ChatState>((set, get) => {
     lastAutoModelNotified: null,
 
     loadConversations: async (q) => {
+      const requestId = ++conversationListRequest
       set({ conversationsLoading: true, conversationsError: null })
       try {
         const conversations = await conversationsApi.list(q)
-        set({ conversations, conversationsLoading: false })
+        if (requestId !== conversationListRequest) return
+        set((s) => ({
+          conversations,
+          conversationsLoading: false,
+          currentConversation:
+            conversations.find((conversation) => conversation.id === s.currentId) ??
+            s.currentConversation,
+        }))
       } catch (err) {
+        if (requestId !== conversationListRequest) return
         const message = err instanceof Error ? err.message : '加载会话失败'
         set({ conversationsLoading: false, conversationsError: message })
+      }
+    },
+
+    loadAgentProfiles: async () => {
+      set({ agentProfilesLoading: true, agentProfilesError: null })
+      try {
+        const agentProfiles = await getAgentProfiles()
+        set({ agentProfiles, agentProfilesLoading: false })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '加载 Agent 类型失败'
+        set({ agentProfilesLoading: false, agentProfilesError: message })
       }
     },
 
@@ -210,13 +593,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     toggleWebSearch: () => set((s) => ({ webSearchEnabled: !s.webSearchEnabled })),
 
-    createConversation: async () => {
+    createConversation: async (agentType = 'coding') => {
+      if (get().streaming) get().stopStreaming()
       try {
-        const conv = await conversationsApi.create({})
+        const conv = await conversationsApi.create({ agentType })
         set((s) => ({
           conversations: [conv, ...s.conversations],
           currentId: conv.id,
+          currentConversation: conv,
           messages: [],
+          agentStreams: new Map(),
           lastAutoModelNotified: null,
         }))
       } catch (err) {
@@ -227,13 +613,23 @@ export const useChatStore = create<ChatState>((set, get) => {
     selectConversation: async (id) => {
       if (get().streaming) get().stopStreaming()
       if (id === null) {
-        set({ currentId: null, messages: [], searchNotice: null, lastAutoModelNotified: null })
+        set({
+          currentId: null,
+          currentConversation: null,
+          messages: [],
+          agentStreams: new Map(),
+          searchNotice: null,
+          lastAutoModelNotified: null,
+        })
         return
       }
       set({
         currentId: id,
+        currentConversation: get().conversations.find((conversation) => conversation.id === id) ??
+          (get().currentConversation?.id === id ? get().currentConversation : null),
         messages: [],
         messagesLoading: true,
+        agentStreams: new Map(),
         searchNotice: null,
         lastAutoModelNotified: null,
       })
@@ -251,6 +647,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const updated = await conversationsApi.patch(id, { title })
         set((s) => ({
           conversations: s.conversations.map((c) => (c.id === id ? updated : c)),
+          currentConversation: s.currentId === id ? updated : s.currentConversation,
         }))
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '重命名失败')
@@ -264,7 +661,13 @@ export const useChatStore = create<ChatState>((set, get) => {
           conversations: s.conversations.filter((c) => c.id !== id),
           // 删除当前活跃会话时同步重置智能选模提示记录
           ...(s.currentId === id
-            ? { currentId: null, messages: [], lastAutoModelNotified: null }
+            ? {
+                currentId: null,
+                currentConversation: null,
+                messages: [],
+                agentStreams: new Map(),
+                lastAutoModelNotified: null,
+              }
             : {}),
         }))
         toast.success('会话已删除')
@@ -276,7 +679,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     exportConversation: async (format) => {
       const id = get().currentId
       if (!id) return
-      const conv = get().conversations.find((c) => c.id === id)
+      const conv = get().currentConversation
       try {
         const blob = await conversationsApi.export(id, format)
         // 通过临时 <a download> 触发浏览器下载，文件名用会话标题
@@ -301,6 +704,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         const updated = await conversationsApi.patch(id, { providerId, modelName })
         set((s) => ({
           conversations: s.conversations.map((c) => (c.id === id ? updated : c)),
+          currentConversation: s.currentId === id ? updated : s.currentConversation,
         }))
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '切换模型失败')
@@ -313,12 +717,15 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 无当前会话时先创建
       if (!conversationId) {
         try {
-          const conv = await conversationsApi.create({})
+          const agentType = 'coding'
+          const conv = await conversationsApi.create({ agentType })
           conversationId = conv.id
           set((s) => ({
             conversations: [conv, ...s.conversations],
             currentId: conv.id,
+            currentConversation: conv,
             messages: [],
+            agentStreams: new Map(),
             lastAutoModelNotified: null,
           }))
         } catch (err) {

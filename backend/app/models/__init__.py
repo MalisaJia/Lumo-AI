@@ -76,6 +76,8 @@ class Conversation(Base):
     provider_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workspace_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    agent_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now, nullable=False
@@ -153,3 +155,65 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=_now, onupdate=_now, nullable=False
     )
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("conversations.id")
+    )
+    parent_task_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("tasks.id")
+    )
+    description: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    result: Mapped[str | None] = mapped_column(Text)
+    agent_run_id: Mapped[str | None] = mapped_column(String(32))
+    blocks: Mapped[str | None] = mapped_column(Text)  # JSON
+    blocked_by: Mapped[str | None] = mapped_column(Text)  # JSON
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("conversations.id")
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("tasks.id")
+    )
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("agent_runs.id")
+    )
+    agent_type: Mapped[str] = mapped_column(String(50))
+    model_name: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    tool_rounds: Mapped[int] = mapped_column(Integer, default=0)
+    token_usage: Mapped[str | None] = mapped_column(Text)  # JSON
+    workspace_dir: Mapped[str | None] = mapped_column(String(500))
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ComputerUseAudit(Base):
+    __tablename__ = "computer_use_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    parameters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    screenshot_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    confirmation_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    result_summary: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -52,11 +52,20 @@ export interface ValidateResult {
   error?: string
 }
 
+export interface AgentProfile {
+  agentType: string
+  displayName: string
+  description: string
+  icon: string
+}
+
 export interface Conversation {
   id: string
   title: string
   providerId: string | null
   modelName: string | null
+  workspaceDir: string | null
+  agentType: string | null
   createdAt: string
   updatedAt: string
 }
@@ -65,12 +74,14 @@ export interface ConversationCreateInput {
   title?: string
   providerId?: string
   modelName?: string
+  agentType?: string
 }
 
 export interface ConversationPatchInput {
   title?: string
   providerId?: string
   modelName?: string
+  workspaceDir?: string
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system'
@@ -98,6 +109,17 @@ export interface UploadResult {
   size: number
 }
 
+export interface UserQuestionOption {
+  label: string
+  description?: string
+}
+
+export interface UserQuestionData {
+  question: string
+  options: UserQuestionOption[]
+  toolCallId?: string
+}
+
 export interface Message {
   id: string
   conversationId: string
@@ -106,6 +128,8 @@ export interface Message {
   tokenCount: number | null
   sources?: SourceRef[] | null
   attachments?: Attachment[] | null
+  thinking?: string
+  userQuestion?: UserQuestionData
   createdAt: string
 }
 
@@ -119,8 +143,60 @@ export type SearchStage = 'searching' | 'reading'
 // 搜索降级原因：noResults=搜索无结果；skipped=模型判定无需搜索
 export type SearchNoticeReason = 'noResults' | 'skipped'
 
+type StreamDataEvent<TType extends string, TData extends object> = {
+  type: TType
+  data?: TData
+} & Partial<TData>
+
+interface ChunkEventData {
+  content: string
+  agentId?: string
+}
+
+interface TaskCreatedEventData {
+  taskId: string
+  parentTaskId?: string
+  description: string
+  conversationId?: string
+}
+
+interface TaskStatusChangedEventData {
+  taskId: string
+  status: string
+  result?: string
+}
+
+interface AgentStartedEventData {
+  agentId: string
+  taskId?: string
+  model?: string
+  agentType?: string
+}
+
+interface AgentStoppedEventData {
+  agentId: string
+  reason?: string
+  status?: string
+  rounds?: number
+}
+
+interface ToolEventData {
+  toolName: string
+  agentId: string
+  toolCallId?: string
+  status?: string
+}
+
+interface ConfirmationRequestEventData {
+  id: string
+  action: string
+  description: string
+  risk_level: 'low' | 'medium' | 'high' | 'critical'
+  screenshot_base64?: string
+}
+
 export type StreamEvent =
-  | { type: 'chunk'; content: string }
+  | StreamDataEvent<'chunk', ChunkEventData>
   | { type: 'done'; messageId: string; usage: ChatUsage }
   | { type: 'error'; message: string }
   | { type: 'status'; stage: SearchStage }
@@ -130,6 +206,21 @@ export type StreamEvent =
   | { type: 'modelSwitch'; from: string; to: string }
   // 任务感知智能选模：会话为「自动」模式时下发实际选用的模型
   | { type: 'autoModel'; model: string; taskType: string }
+  // 编码 Agent 的终端命令执行结果
+  | { type: 'toolExecution'; toolName: string; command: string; output: string }
+  | StreamDataEvent<'thinking', { content: string }>
+  | StreamDataEvent<'askUser', UserQuestionData>
+  | StreamDataEvent<'confirmationRequest', ConfirmationRequestEventData>
+  | StreamDataEvent<'taskCreated', TaskCreatedEventData>
+  | StreamDataEvent<'taskStatusChanged', TaskStatusChangedEventData>
+  | StreamDataEvent<'agentStarted', AgentStartedEventData>
+  | StreamDataEvent<'agentStopped', AgentStoppedEventData>
+  | StreamDataEvent<'toolStart', ToolEventData>
+  | StreamDataEvent<'toolEnd', ToolEventData>
+  | StreamDataEvent<
+      'fileChanged',
+      { path: string; changeType?: string; oldContent?: string; newContent?: string }
+    >
 
 export interface StreamChatParams {
   conversationId: string

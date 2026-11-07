@@ -227,10 +227,21 @@ class ChatPipeline:
             raise PipelineError("API Key 解密失败，请重新保存服务商配置") from exc
 
         if ctx.extra.get("autoRequested"):
+            fallback_model = ctx.model_name
             try:
                 await self._apply_smart_selection(ctx, provider)
             except Exception:
-                logger.warning("智能选模失败，降级默认模型", exc_info=True)
+                ctx.model_name = fallback_model
+                ctx.extra.pop("autoModel", None)
+                ctx.extra.pop("rankedModels", None)
+                logger.warning(
+                    "Smart selection failed; retaining auto routing with fallback model "
+                    "%s (conversation=%s, provider=%s)",
+                    fallback_model,
+                    ctx.conversation_id,
+                    provider.id,
+                    exc_info=True,
+                )
         return ctx
 
     async def _apply_smart_selection(self, ctx: ChatContext, provider: Provider) -> None:
@@ -243,6 +254,14 @@ class ChatPipeline:
         if not await routing_service.is_smart_selection_enabled(
             self.session, ctx.user_id
         ):
+            logger.info(
+                "Smart selection is explicitly disabled; using model %s "
+                "(conversation=%s, provider=%s, auto_requested=%s)",
+                ctx.model_name,
+                ctx.conversation_id,
+                provider.id,
+                ctx.extra.get("autoRequested", False),
+            )
             return
 
         # 取最后一条 user 消息判断是否带图片附件（regenerate 时兼做文本兑底）；
@@ -276,6 +295,11 @@ class ChatPipeline:
             .all()
         )
         if not models:
+            logger.warning(
+                "Smart selection found no models (conversation=%s, provider=%s)",
+                ctx.conversation_id,
+                provider.id,
+            )
             return
         ranked = classifier.rank_models(list(models), task_type)
 
@@ -295,12 +319,28 @@ class ChatPipeline:
                     selected = m.name
                     break
         if selected is None:
+            logger.warning(
+                "Smart selection candidates are all cooling down; using model %s "
+                "(conversation=%s, provider=%s)",
+                ctx.model_name,
+                ctx.conversation_id,
+                provider.id,
+            )
             return
 
         ctx.model_name = selected
         ctx.extra["autoModel"] = {"model": selected, "taskType": task_type}
         ctx.extra["rankedModels"] = [m.name for m in ranked]
         classifier.set_sticky(ctx.conversation_id, task_type, selected)
+        logger.info(
+            "Smart selection chose model %s for task %s "
+            "(conversation=%s, provider=%s, ranked_models=%s)",
+            selected,
+            task_type,
+            ctx.conversation_id,
+            provider.id,
+            ctx.extra["rankedModels"],
+        )
 
     # ------------------------------------------------------------------
     # 多模态：把带附件的历史转成 OpenAI 兼容的 messages
@@ -582,16 +622,27 @@ class ChatPipeline:
         - {"type": "chunk", "content": 增量文本}
         - {"type": "modelSwitch", "from": 旧模型, "to": 新模型}（实际切换时才发）
 
-        enabled=False 时完全等价于单模型 call_provider 行为。
-        可重试错误仅在尚未产出任何 chunk 时触发切换；已输出过内容维持报错。
+        Outside auto mode, enabled=False preserves single-model behavior.
+        Auto mode also falls back on PipelineError before any content is emitted.
         """
-        if not enabled:
+        # Auto requests must try alternatives even when routing is disabled.
+        auto_requested = ctx.extra.get("autoRequested", False)
+        if not enabled and not auto_requested:
             async for chunk in self.call_provider(ctx):
                 yield {"type": "chunk", "content": chunk}
             return
 
         candidates = await self._routing_candidates(ctx)
-        last_error: RetryableUpstreamError | None = None
+        logger.info(
+            "Provider routing started (conversation=%s, provider=%s, "
+            "enabled=%s, auto_requested=%s, candidates=%s)",
+            ctx.conversation_id,
+            ctx.provider_id,
+            enabled,
+            auto_requested,
+            candidates,
+        )
+        last_error: PipelineError | None = None
         failed_model: str | None = None
         for model_name in candidates:
             ctx.model_name = model_name
@@ -611,6 +662,17 @@ class ChatPipeline:
             except RetryableUpstreamError as exc:
                 if ctx.response_text:
                     # 已向客户端输出过内容：不再切换，维持现有报错行为
+                    raise
+                if ctx.provider_id:
+                    _set_cooldown(ctx.provider_id, model_name)
+                logger.warning(
+                    "模型 %s 调用失败（%s），尝试同渠道自动路由", model_name, exc
+                )
+                last_error = exc
+                failed_model = model_name
+            except PipelineError as exc:
+                # Auto mode retries non-retryable errors only before streaming.
+                if not auto_requested or ctx.response_text:
                     raise
                 if ctx.provider_id:
                     _set_cooldown(ctx.provider_id, model_name)

@@ -1,5 +1,5 @@
 // 应用主布局：侧边栏（可折叠）+ 顶栏 + 聊天区/开始页 + 设置模态
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { ToastContainer } from './ToastContainer'
 import { MessageList } from '../chat/MessageList'
@@ -7,19 +7,27 @@ import { ChatInput } from '../chat/ChatInput'
 import { ModelSelector } from '../chat/ModelSelector'
 import { ExportButton } from '../chat/ExportButton'
 import { StartScreen } from '../chat/StartScreen'
+import ConfirmationDialog from '../chat/ConfirmationDialog'
 import { SettingsModal } from '../settings/SettingsModal'
 import { useChatStore } from '../../stores/chatStore'
 import { useSettingsStore } from '../../stores/settingsStore'
 
+const IdeLayout = lazy(() => import('../ide/IdeLayout'))
+const PptLayout = lazy(() => import('../ppt/PptLayout'))
+
 export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false)
   const currentId = useChatStore((s) => s.currentId)
+  const currentConv = useChatStore((s) => s.currentConversation)
+  const isCodingIde = currentConv?.agentType === 'coding' && !!currentId
+  const isPptWorkspace = currentConv?.agentType === 'ppt' && !!currentId
   const theme = useSettingsStore((s) => s.theme)
   const settingsOpen = useSettingsStore((s) => s.settingsOpen)
 
-  // 首次加载会话列表、服务商与模型路由设置
+  // 首次加载会话列表、Agent 档案、服务商与模型路由设置
   useEffect(() => {
     useChatStore.getState().loadConversations()
+    useChatStore.getState().loadAgentProfiles()
     useSettingsStore.getState().loadProviders()
     useSettingsStore.getState().loadRoutingSettings()
   }, [])
@@ -71,12 +79,27 @@ export function AppLayout() {
         </header>
 
         {/* 主内容 */}
-        {currentId ? <MessageList /> : <StartScreen />}
-        <ChatInput />
+        {!currentId ? (
+          <StartScreen />
+        ) : isCodingIde ? (
+          <Suspense fallback={<div className="flex-1" />}>
+            <IdeLayout />
+          </Suspense>
+        ) : isPptWorkspace ? (
+          <Suspense fallback={<div className="flex-1" />}>
+            <PptLayout />
+          </Suspense>
+        ) : (
+          <>
+            <MessageList />
+            <ChatInput />
+          </>
+        )}
       </main>
 
       {settingsOpen && <SettingsModal />}
       <ToastContainer />
+      <ConfirmationDialog />
     </div>
   )
 }

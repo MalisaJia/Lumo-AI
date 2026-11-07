@@ -8,7 +8,7 @@ from app.modules.search.service import _get_setting, _set_setting
 
 # settings 表中的键名；值 "true"/"false"，缺省视为开启
 KEY_AUTO_ROUTING = "auto_routing"
-# 任务感知智能选模开关；值 "true"/"false"，缺省视为关闭
+# Task-aware smart selection defaults to enabled unless explicitly disabled.
 KEY_SMART_SELECTION = "smart_model_selection"
 
 
@@ -18,8 +18,8 @@ async def is_auto_routing_enabled(session: AsyncSession, user_id: str) -> bool:
 
 
 async def is_smart_selection_enabled(session: AsyncSession, user_id: str) -> bool:
-    """内部使用：仅显式保存 "true" 时开启，默认关闭。"""
-    return (await _get_setting(session, user_id, KEY_SMART_SELECTION)) == "true"
+    """Enable smart selection by default; only explicit "false" disables it."""
+    return (await _get_setting(session, user_id, KEY_SMART_SELECTION)) != "false"
 
 
 async def get_routing_settings(session: AsyncSession, user_id: str) -> dict[str, Any]:

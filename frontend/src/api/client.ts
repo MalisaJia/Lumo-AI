@@ -1,5 +1,6 @@
 // fetch 封装：JSON 请求 + SSE 流式聊天
 import type {
+  AgentProfile,
   Conversation,
   ConversationCreateInput,
   ConversationPatchInput,
@@ -18,6 +19,29 @@ import type {
   UploadResult,
   ValidateResult,
 } from './types'
+
+export interface FileEntry {
+  name: string
+  type: 'file' | 'dir'
+  size?: number
+}
+
+export interface FileContent {
+  content: string
+  lineCount: number
+  language: string
+}
+
+export interface TaskApiItem {
+  id: string
+  conversation_id: string
+  parent_task_id: string | null
+  description: string
+  status: string
+  result: string | null
+  agent_run_id: string | null
+  priority: number
+}
 
 export class ApiError extends Error {
   status: number
@@ -84,6 +108,23 @@ export const providersApi = {
 }
 
 // ---------- Conversations ----------
+interface AgentProfileResponse {
+  agent_type: string
+  display_name: string
+  description: string
+  icon: string
+}
+
+export async function getAgentProfiles(): Promise<AgentProfile[]> {
+  const profiles = await request<AgentProfileResponse[]>('/api/conversations/agent-profiles')
+  return profiles.map((profile) => ({
+    agentType: profile.agent_type,
+    displayName: profile.display_name,
+    description: profile.description,
+    icon: profile.icon,
+  }))
+}
+
 export const conversationsApi = {
   list: (q?: string) =>
     request<Conversation[]>(`/api/conversations${q ? `?q=${encodeURIComponent(q)}` : ''}`),
@@ -113,6 +154,42 @@ export const conversationsApi = {
     }
     return res.blob()
   },
+}
+
+// ---------- Workspace ----------
+export const workspaceApi = {
+  tree: (path: string): Promise<FileEntry[]> =>
+    request(`/api/workspace/tree?path=${encodeURIComponent(path)}`),
+
+  readFile: (path: string): Promise<FileContent> =>
+    request(`/api/workspace/file?path=${encodeURIComponent(path)}`),
+
+  saveFile: (path: string, content: string): Promise<void> =>
+    request('/api/workspace/file', {
+      method: 'PUT',
+      body: JSON.stringify({ path, content }),
+    }),
+
+  updateWorkspaceDir: (conversationId: string, workspaceDir: string): Promise<Conversation> =>
+    request(`/api/conversations/${conversationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ workspaceDir }),
+    }),
+}
+
+// ---------- Tasks ----------
+export const tasksApi = {
+  list: (conversationId: string) =>
+    request<TaskApiItem[]>('/api/tasks?conversation_id=' + encodeURIComponent(conversationId)),
+  cancel: (id: string) => request<void>('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' }),
+}
+
+// ---------- Tool confirmations ----------
+export function confirmAction(confirmationId: string, approved: boolean, reason = '') {
+  return request<unknown>(`/api/tools/confirm/${encodeURIComponent(confirmationId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ approved, reason }),
+  })
 }
 
 // ---------- Messages ----------

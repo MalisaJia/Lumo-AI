@@ -1,6 +1,7 @@
 // 输入框：自适应高度，Enter 发送 / Shift+Enter 换行，流式中变为停止按钮；
 // 支持附件上传（按钮选择/粘贴）：图片缩略图预览、文档文件 chip 预览，随消息发送
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { uploadsApi } from '../../api/client'
 import type { Attachment } from '../../api/types'
@@ -39,7 +40,7 @@ interface PendingFile {
 
 let fileSeq = 1
 
-export function ChatInput() {
+export function ChatInput({ hidePptButton }: { hidePptButton?: boolean }) {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<PendingFile[]>([])
   const [pptDialogOpen, setPptDialogOpen] = useState(false)
@@ -303,28 +304,34 @@ export function ChatInput() {
               e.target.value = ''
             }}
           />
-          <button
-            onClick={() => setPptDialogOpen(true)}
-            title="制作 PPT"
-            className="flex items-center gap-1.5 rounded-full border border-neutral-300 px-2.5 py-1 text-xs text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-300"
-          >
-            <svg viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current" strokeWidth="1.8">
-              <rect x="4" y="2" width="16" height="20" rx="2" />
-              <path d="M8 7h8M8 11h8M8 15h4" />
-            </svg>
-            制作 PPT
-          </button>
+          {!hidePptButton && (
+            <button
+              onClick={() => setPptDialogOpen(true)}
+              title="制作 PPT"
+              className="flex items-center gap-1.5 rounded-full border border-neutral-300 px-2.5 py-1 text-xs text-neutral-500 transition-colors hover:border-neutral-400 hover:text-neutral-600 dark:border-neutral-600 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-300"
+            >
+              <svg viewBox="0 0 24 24" className="size-3.5 fill-none stroke-current" strokeWidth="1.8">
+                <rect x="4" y="2" width="16" height="20" rx="2" />
+                <path d="M8 7h8M8 11h8M8 15h4" />
+              </svg>
+              制作 PPT
+            </button>
+          )}
         </div>
       </div>
       <p className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-neutral-400">
         内容由 AI 生成，请注意甄别
       </p>
-      {pptDialogOpen && (
-        <PptDialog
-          initialReference={value}
-          onClose={() => setPptDialogOpen(false)}
-        />
-      )}
+      {/* Portal 到 body：避免祖先 backdrop-blur 形成包含块，导致 fixed 弹窗定位偏移 */}
+      {!hidePptButton &&
+        pptDialogOpen &&
+        createPortal(
+          <PptDialog
+            initialReference={value}
+            onClose={() => setPptDialogOpen(false)}
+          />,
+          document.body,
+        )}
     </div>
   )
 }

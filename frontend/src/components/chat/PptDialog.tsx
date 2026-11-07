@@ -53,7 +53,7 @@ export function PptDialog({ initialReference, onClose }: PptDialogProps) {
       onClick={() => !loading && onClose()}
     >
       <div
-        className="w-full max-w-lg rounded-xl bg-white p-6 shadow-2xl dark:bg-neutral-800"
+        className="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-2xl dark:bg-neutral-800"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">

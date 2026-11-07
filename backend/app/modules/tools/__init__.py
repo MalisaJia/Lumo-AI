@@ -7,6 +7,12 @@
 from app.modules.tools import builtin  # noqa: F401
 from app.modules.tools import ppt_tool  # noqa: F401
 from app.modules.tools import web_search_tool  # noqa: F401
+from app.modules.tools import file_tools       # noqa: F401
+from app.modules.tools import search_tools     # noqa: F401
+from app.modules.tools import bash_tool        # noqa: F401
+from app.modules.tools import ask_user_tool    # noqa: F401
+from app.modules.tools import shared_context_tool  # noqa: F401
+from app.modules.tools import agent_tool       # noqa: F401
 from app.modules.tools.registry import get_registry
 
 __all__ = ["get_registry"]

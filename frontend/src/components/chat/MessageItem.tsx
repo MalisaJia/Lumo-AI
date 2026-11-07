@@ -5,6 +5,8 @@ import type { Attachment, Message, SourceRef } from '../../api/types'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { useChatStore } from '../../stores/chatStore'
 import { toast } from '../../stores/toastStore'
+import { ThinkingBlock } from './ThinkingBlock'
+import { UserQuestion } from './UserQuestion'
 
 interface MessageItemProps {
   message: Message
@@ -171,6 +173,14 @@ function MessageItemInner({ message, isLastAssistant, isStreamingThis }: Message
     useChatStore.getState().regenerate()
   }
 
+  const handleQuestionSelect = (label: string) => {
+    if (useChatStore.getState().streaming) {
+      toast.info('请等待当前回复完成后再选择')
+      return
+    }
+    void useChatStore.getState().sendMessage(label)
+  }
+
   return (
     <div className={clsx('group flex gap-3 px-4 py-3', isUser && 'flex-row-reverse')}>
       {/* 头像 */}
@@ -223,6 +233,7 @@ function MessageItemInner({ message, isLastAssistant, isStreamingThis }: Message
           </div>
         ) : (
           <div className="w-full rounded-2xl rounded-tl-md border border-neutral-200 bg-white px-4 py-2 shadow-sm dark:border-neutral-700 dark:bg-neutral-800">
+            {message.thinking && <ThinkingBlock content={message.thinking} />}
             {searchNotice && (
               // 搜索降级提示条（仅当次流式会话内展示）
               <div className="mt-1.5 mb-1 rounded-lg bg-neutral-100 px-2.5 py-1.5 text-xs text-neutral-500 dark:bg-neutral-700/50 dark:text-neutral-400">
@@ -254,8 +265,15 @@ function MessageItemInner({ message, isLastAssistant, isStreamingThis }: Message
                 <span className="size-1.5 animate-bounce rounded-full bg-violet-400 [animation-delay:150ms]" />
                 <span className="size-1.5 animate-bounce rounded-full bg-blue-400 [animation-delay:300ms]" />
               </div>
-            ) : (
+            ) : message.userQuestion || message.thinking ? null : (
               <p className="py-1 text-sm text-neutral-400">（空回复）</p>
+            )}
+            {message.userQuestion && (
+              <UserQuestion
+                question={message.userQuestion.question}
+                options={message.userQuestion.options}
+                onSelect={handleQuestionSelect}
+              />
             )}
             {isStreamingThis && message.content && (
               <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-violet-400 align-text-bottom" />

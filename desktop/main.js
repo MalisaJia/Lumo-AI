@@ -1,7 +1,8 @@
 // Lumo AI 桌面壳：启动本地后端 exe 并加载其 Web 界面（纯 CommonJS）
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const net = require('net');
 const http = require('http');
 
@@ -48,6 +49,7 @@ function startBackend(port) {
     env: Object.assign({}, process.env, {
       LUMO_DATA_DIR: dataDir,
       LUMO_PORT: String(port),
+      LUMO_RUNTIME: 'desktop',
     }),
     windowsHide: true,
     detached: false,
@@ -101,17 +103,81 @@ function waitForHealth(port, timeoutMs = 30000) {
   });
 }
 
+ipcMain.handle('pick-folder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: '选择工作区目录',
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
+
 function createWindow(port) {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     icon: path.join(__dirname, 'build', 'icon.ico'),
     autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   });
   mainWindow.loadURL(`http://127.0.0.1:${port}/`);
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+// 版本感知的缓存失效：app.getVersion() 变化（升级）后清一次 HTTP 缓存，
+// 避免 Chromium 启发式新鲜度复用旧版 SPA；版本一致时绝不多清。
+// userData/version-marker.json 记录上次启动的版本；不存在（首次安装或老
+// 版本从未写过）时只写入基准版本，不做任何清理。
+const VERSION_MARKER_FILE = 'version-marker.json';
+
+function readMarkerVersion() {
+  try {
+    const raw = fs.readFileSync(path.join(app.getPath('userData'), VERSION_MARKER_FILE), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed.version === 'string' ? parsed.version : null;
+  } catch (_) {
+    return null; // 首次运行或文件损坏，无可比基准
+  }
+}
+
+function writeMarkerVersion(version) {
+  const dir = app.getPath('userData');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, VERSION_MARKER_FILE),
+      JSON.stringify({ version: version }, null, 2),
+      'utf-8',
+    );
+  } catch (err) {
+    console.warn('写入版本标记失败:', err.message);
+  }
+}
+
+async function clearCacheIfUpgraded() {
+  try {
+    const currentVersion = app.getVersion();
+    const previousVersion = readMarkerVersion();
+    if (previousVersion === null) {
+      writeMarkerVersion(currentVersion);
+      return;
+    }
+    if (previousVersion === currentVersion) return;
+    console.log(`检测到版本变化 ${previousVersion} -> ${currentVersion}，清理 HTTP 缓存`);
+    await session.defaultSession.clearCache();
+    writeMarkerVersion(currentVersion);
+  } catch (err) {
+    // 缓存清理失败不阻断启动（后端静态资源已带 no-cache 头兜底）
+    console.warn('版本感知缓存清理跳过:', err.message);
+  }
 }
 
 // 用 taskkill 杀掉后端进程树；进程已退出时忽略错误，只清理一次
@@ -142,6 +208,7 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     try {
+      await clearCacheIfUpgraded();
       const port = await findFreePort(8000);
       startBackend(port);
       await waitForHealth(port);

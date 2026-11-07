@@ -93,12 +93,15 @@ class ConversationCreate(CamelModel):
     title: str | None = None
     provider_id: str | None = None
     model_name: str | None = None
+    agent_type: str | None = None
+    workspace_dir: str | None = None
 
 
 class ConversationUpdate(CamelModel):
     title: str | None = None
     provider_id: str | None = None
     model_name: str | None = None
+    workspace_dir: str | None = None
 
 
 class ConversationOut(CamelModel):
@@ -106,6 +109,8 @@ class ConversationOut(CamelModel):
     title: str
     provider_id: str | None = None
     model_name: str | None = None
+    workspace_dir: str | None = None
+    agent_type: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -215,7 +220,7 @@ class RoutingSettingsOut(CamelModel):
     """GET/PUT 响应：同渠道模型自动路由与任务感知智能选模开关。"""
 
     enabled: bool = True
-    smart_selection_enabled: bool = False
+    smart_selection_enabled: bool = True
 
 
 class RoutingSettingsUpdate(CamelModel):

@@ -11,6 +11,10 @@ function ConversationRow({ conv }: { conv: Conversation }) {
   const [title, setTitle] = useState(conv.title)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const active = conv.id === currentId
+  const agentProfiles = useChatStore((s) => s.agentProfiles)
+  const agentType = conv.agentType ?? 'coding'
+  const agentProfile = agentProfiles.find((profile) => profile.agentType === agentType)
+  const agentIcon = agentProfile?.icon || (agentType === 'ppt' ? '📊' : '🔧')
 
   const submitRename = () => {
     setRenaming(false)
@@ -50,14 +54,18 @@ function ConversationRow({ conv }: { conv: Conversation }) {
         <>
           <button
             onClick={() => useChatStore.getState().selectConversation(conv.id)}
+            title={agentProfile?.displayName ?? agentType}
             className={clsx(
-              'flex-1 truncate px-3 py-2 text-left text-sm',
+              'flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm',
               active
                 ? 'font-medium text-violet-700 dark:text-violet-300'
                 : 'text-neutral-700 dark:text-neutral-300',
             )}
           >
-            {conv.title || '新对话'}
+            <span aria-hidden className="shrink-0 text-sm leading-none">
+              {agentIcon}
+            </span>
+            <span className="truncate">{conv.title || '新对话'}</span>
           </button>
           <div className="mr-1 hidden shrink-0 items-center gap-0.5 group-hover:flex">
             <button
@@ -117,7 +125,13 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
   const conversationsLoading = useChatStore((s) => s.conversationsLoading)
   const conversationsError = useChatStore((s) => s.conversationsError)
   const searchQuery = useChatStore((s) => s.searchQuery)
+  const agentProfiles = useChatStore((s) => s.agentProfiles)
+  const agentProfilesLoading = useChatStore((s) => s.agentProfilesLoading)
+  const agentProfilesError = useChatStore((s) => s.agentProfilesError)
+  const [profilePickerOpen, setProfilePickerOpen] = useState(false)
+  const [creatingAgentType, setCreatingAgentType] = useState<string | null>(null)
   const debounceRef = useRef<number | undefined>(undefined)
+  const pickerRef = useRef<HTMLDivElement>(null)
 
   // 搜索防抖 300ms
   const handleSearch = (q: string) => {
@@ -130,6 +144,27 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
 
   useEffect(() => () => window.clearTimeout(debounceRef.current), [])
 
+  useEffect(() => {
+    if (!profilePickerOpen) return
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        setProfilePickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [profilePickerOpen])
+
+  const handleCreateConversation = async (agentType: string) => {
+    setCreatingAgentType(agentType)
+    try {
+      await useChatStore.getState().createConversation(agentType)
+      setProfilePickerOpen(false)
+    } finally {
+      setCreatingAgentType(null)
+    }
+  }
+
   return (
     <aside
       className={clsx(
@@ -138,15 +173,76 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
       )}
     >
       <div className="flex w-[260px] flex-col gap-2 p-3">
-        <button
-          onClick={() => useChatStore.getState().selectConversation(null)}
-          className="flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 to-blue-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-90"
-        >
-          <svg viewBox="0 0 20 20" className="size-4 fill-current">
-            <path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1z" />
-          </svg>
-          新建对话
-        </button>
+        <div ref={pickerRef} className="relative">
+          <button
+            onClick={() => setProfilePickerOpen((open) => !open)}
+            aria-expanded={profilePickerOpen}
+            aria-haspopup="menu"
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-violet-500 to-blue-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+          >
+            <svg viewBox="0 0 20 20" className="size-4 fill-current">
+              <path d="M10 3a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H4a1 1 0 1 1 0-2h5V4a1 1 0 0 1 1-1z" />
+            </svg>
+            新建对话
+            <svg
+              viewBox="0 0 20 20"
+              className={clsx('size-3.5 fill-current transition-transform', profilePickerOpen && 'rotate-180')}
+            >
+              <path d="M5.3 7.7a1 1 0 0 1 1.4 0L10 11l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4z" />
+            </svg>
+          </button>
+
+          {profilePickerOpen && (
+            <div
+              role="menu"
+              className="absolute left-0 top-full z-30 mt-2 w-full rounded-xl border border-neutral-200 bg-white p-1.5 shadow-xl dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              <div className="px-2.5 pb-1.5 pt-1 text-[11px] font-medium tracking-wide text-neutral-400 uppercase">
+                选择 Agent 类型
+              </div>
+              {agentProfilesLoading ? (
+                <p className="px-2.5 py-3 text-center text-xs text-neutral-400">加载中…</p>
+              ) : agentProfilesError ? (
+                <div className="px-2.5 py-2 text-center">
+                  <p className="text-xs text-red-400">{agentProfilesError}</p>
+                  <button
+                    onClick={() => useChatStore.getState().loadAgentProfiles()}
+                    className="mt-1.5 rounded-lg px-2 py-1 text-xs text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-500/10"
+                  >
+                    重试
+                  </button>
+                </div>
+              ) : (
+                agentProfiles.map((profile) => (
+                  <button
+                    key={profile.agentType}
+                    role="menuitem"
+                    onClick={() => handleCreateConversation(profile.agentType)}
+                    disabled={creatingAgentType !== null}
+                    className="group/profile flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-neutral-100 disabled:opacity-60 dark:hover:bg-neutral-700"
+                  >
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-base transition-transform group-hover/profile:scale-105 dark:bg-neutral-700">
+                      {profile.icon || (profile.agentType === 'ppt' ? '📊' : '🔧')}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                        <span className="truncate">{profile.displayName}</span>
+                        {profile.agentType === 'coding' && (
+                          <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-500 dark:bg-violet-500/15 dark:text-violet-300">
+                            默认
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-4 text-neutral-400">
+                        {profile.description}
+                      </span>
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <input
           value={searchQuery}
           onChange={(e) => handleSearch(e.target.value)}

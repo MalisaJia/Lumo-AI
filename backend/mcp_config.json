@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"]
+    },
+    "outlook": {
+      "command": "npx",
+      "args": ["-y", "@softeria/ms-365-mcp-server"]
+    }
+  }
+}

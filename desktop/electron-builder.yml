@@ -5,6 +5,8 @@ directories:
 files:
   - main.js
   - package.json
+  - preload.js
+  - build/icon.ico
 extraResources:
   - from: "../backend/dist/lumo_backend"
     to: "backend"

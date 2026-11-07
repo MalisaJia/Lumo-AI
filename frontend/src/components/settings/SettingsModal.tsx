@@ -224,8 +224,12 @@ function SearchSettingsSection() {
 function RoutingSettingsSection() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [enabled, setEnabled] = useState(true)
-  const [smartSelectionEnabled, setSmartSelectionEnabled] = useState(false)
+  const [enabled, setEnabled] = useState(
+    () => useSettingsStore.getState().routingSettings?.enabled ?? true,
+  )
+  const [smartSelectionEnabled, setSmartSelectionEnabled] = useState(
+    () => useSettingsStore.getState().routingSettings?.smartSelectionEnabled ?? true,
+  )
 
   useEffect(() => {
     settingsApi

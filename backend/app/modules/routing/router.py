@@ -1,4 +1,7 @@
+import logging
+
 from fastapi import APIRouter, Depends
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user_id
@@ -6,6 +9,7 @@ from app.core.db import get_session
 from app.modules.routing import service
 from app.schemas import RoutingSettingsOut, RoutingSettingsUpdate
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
@@ -13,8 +17,17 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 async def get_routing_settings(
     session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
-):
-    return await service.get_routing_settings(session, user_id)
+) -> RoutingSettingsOut:
+    try:
+        settings = await service.get_routing_settings(session, user_id)
+    except SQLAlchemyError:
+        logger.warning(
+            "Failed to read routing settings; returning enabled defaults (user=%s)",
+            user_id,
+            exc_info=True,
+        )
+        return RoutingSettingsOut()
+    return RoutingSettingsOut.model_validate(settings)
 
 
 @router.put("/routing", response_model=RoutingSettingsOut)

@@ -68,8 +68,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     try {
       const routingSettings = await settingsApi.getRouting()
       set({ routingSettings })
-    } catch {
-      // 启动时静默失败：仅影响「自动」项展示，设置面板打开时会再次加载并提示
+    } catch (err) {
+      console.warn('Failed to load routing settings; retaining cached settings or backend defaults.', err)
+      set((state) => ({
+        routingSettings: state.routingSettings ?? {
+          enabled: true,
+          smartSelectionEnabled: true,
+        },
+      }))
     }
   },
   setRoutingSettings: (settings) => set({ routingSettings: settings }),

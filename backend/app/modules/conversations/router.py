@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user_id
+from app.core.config import settings
 from app.core.db import get_session
 from app.modules.conversations import service
 from app.schemas import (
@@ -27,18 +28,39 @@ async def list_conversations(
     return await service.list_conversations(session, user_id, q)
 
 
+@router.get("/agent-profiles")
+async def list_agent_profiles():
+    from app.modules.tools.agent_profiles import get_all_profiles
+
+    return [
+        {
+            "agent_type": profile.agent_type,
+            "display_name": profile.display_name,
+            "description": profile.description,
+            "icon": profile.icon,
+        }
+        for profile in get_all_profiles()
+    ]
+
+
 @router.post("", response_model=ConversationOut, status_code=201)
 async def create_conversation(
     body: ConversationCreate,
     session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ):
+    from app.modules.tools.agent_profiles import get_default_profile, get_profile
+
+    profile = get_profile(body.agent_type or "") or get_default_profile()
     return await service.create_conversation(
         session,
         user_id,
         title=body.title,
         provider_id=body.provider_id,
         model_name=body.model_name,
+        system_prompt=profile.build_prompt(body.workspace_dir or settings.workspace_dir),
+        workspace_dir=body.workspace_dir,
+        agent_type=body.agent_type,
     )
 
 
@@ -58,6 +80,7 @@ async def update_conversation(
         title=body.title,
         provider_id=body.provider_id,
         model_name=body.model_name,
+        workspace_dir=body.workspace_dir,
     )
 
 

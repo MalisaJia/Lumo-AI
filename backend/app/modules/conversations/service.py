@@ -57,12 +57,18 @@ async def create_conversation(
     title: str | None,
     provider_id: str | None,
     model_name: str | None,
+    system_prompt: str | None = None,
+    workspace_dir: str | None = None,
+    agent_type: str | None = None,
 ) -> Conversation:
     conversation = Conversation(
         user_id=user_id,
         title=title or "新对话",
         provider_id=provider_id,
         model_name=model_name,
+        system_prompt=system_prompt,
+        workspace_dir=workspace_dir,
+        agent_type=agent_type,
     )
     session.add(conversation)
     await session.commit()
@@ -76,6 +82,7 @@ async def update_conversation(
     title: str | None,
     provider_id: str | None,
     model_name: str | None,
+    workspace_dir: str | None,
 ) -> Conversation:
     if title is not None:
         conversation.title = title
@@ -83,6 +90,8 @@ async def update_conversation(
         conversation.provider_id = provider_id
     if model_name is not None:
         conversation.model_name = model_name
+    if workspace_dir is not None:
+        conversation.workspace_dir = workspace_dir
     conversation.updated_at = _now()
     await session.commit()
     return conversation

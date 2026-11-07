@@ -13,6 +13,14 @@
 
 import multiprocessing
 import os
+import sys
+
+# PyInstaller --noconsole 模式下 stdout/stderr 为 None，
+# uvicorn 日志配置会调用 isatty() 导致 AttributeError，需提前修补
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
 
 import uvicorn
 

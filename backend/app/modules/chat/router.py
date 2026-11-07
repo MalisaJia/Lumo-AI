@@ -2,14 +2,18 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user_id
+from app.core.config import AgentConfig
 from app.core.db import async_session_factory, get_session
 from app.models import Message
+from app.modules.agents.events import AgentEvent, event_bus
 from app.modules.conversations import service as conv_service
 from app.modules.memory import extractor as memory_extractor
 from app.modules.memory import service as memory_service
@@ -17,17 +21,93 @@ from app.modules.routing import service as routing_service
 from app.modules.search import service as search_service
 from app.modules.tools import executor as tools_executor
 from app.modules.tools import get_registry, service as tools_service
+from app.modules.tools.agent_profiles import get_default_profile, get_profile
 from app.pipeline.chat_pipeline import ChatContext, ChatPipeline, PipelineError
 from app.schemas import ChatStreamRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+computer_use_router = APIRouter(tags=["computer-use"])
 
 
 def _sse(payload: dict) -> str:
     """一行 SSE 事件：data: 开头、双换行结尾。"""
     return f"data:{json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _merge_agent_events(
+    stream: AsyncGenerator[dict[str, Any], None],
+    event_queue: asyncio.Queue,
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Merge tool-loop output and conversation-scoped AgentEventBus events."""
+    stream_task: asyncio.Task | None = asyncio.create_task(stream.__anext__())
+    event_task: asyncio.Task | None = asyncio.create_task(event_queue.get())
+    try:
+        while stream_task is not None:
+            wait_set = {stream_task}
+            if event_task is not None:
+                wait_set.add(event_task)
+            done, _ = await asyncio.wait(
+                wait_set, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if event_task is not None and event_task in done:
+                agent_event: AgentEvent = event_task.result()
+                if agent_event.type == "__close__":
+                    return
+                yield {"type": agent_event.type, **agent_event.data}
+                event_task = asyncio.create_task(event_queue.get())
+
+            if stream_task in done:
+                try:
+                    yield stream_task.result()
+                except StopAsyncIteration:
+                    stream_task = None
+                    await asyncio.sleep(0)
+                    if event_task is not None and event_task.done():
+                        agent_event = event_task.result()
+                        if agent_event.type != "__close__":
+                            yield {"type": agent_event.type, **agent_event.data}
+                        event_task = None
+                    while True:
+                        try:
+                            agent_event = event_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        if agent_event.type != "__close__":
+                            yield {"type": agent_event.type, **agent_event.data}
+                else:
+                    stream_task = asyncio.create_task(stream.__anext__())
+    finally:
+        pending = [task for task in (stream_task, event_task) if task is not None]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        try:
+            await stream.aclose()
+        except Exception:
+            logger.exception("Failed to close merged upstream stream")
+
+
+async def _persist_safely(pipeline: ChatPipeline, ctx: ChatContext) -> Any:
+    """Persist a partial reply without hiding the original stream failure."""
+    try:
+        return await pipeline.persist(ctx)
+    except Exception:
+        logger.exception(
+            "Failed to persist chat reply: conversation_id=%s",
+            ctx.conversation_id,
+        )
+        try:
+            await pipeline.session.rollback()
+        except Exception:
+            logger.exception(
+                "Failed to roll back chat session: conversation_id=%s",
+                ctx.conversation_id,
+            )
+        return None
 
 
 def _fallback_usage(ctx: ChatContext) -> dict[str, int]:
@@ -92,6 +172,13 @@ async def chat_stream(
     user_content = body.content or ""
     conversation_id = body.conversation_id
     enable_search = body.enable_search
+    agent_profile = (
+        get_profile(conversation.agent_type or "") or get_default_profile()
+    )
+    agent_config = AgentConfig(
+        allowed_tools=list(agent_profile.recommended_tools),
+        workspace_dir=conversation.workspace_dir,
+    )
 
     async def event_stream() -> AsyncGenerator[str, None]:
         # StreamingResponse 生命周期长于 Depends 会话，这里独立开一个；
@@ -103,6 +190,7 @@ async def chat_stream(
                 user_id=user_id,
                 user_message=user_content,
             )
+            event_queue = event_bus.subscribe(conversation_id, replace=True)
             try:
                 await pipeline.load_history(ctx)
                 if not ctx.user_message:
@@ -204,11 +292,12 @@ async def chat_stream(
                             tools_payload,
                             is_disconnected=request.is_disconnected,
                             routing_enabled=auto_routing,
+                            agent_config=agent_config,
                         )
                 if agen is None:
                     agen = pipeline.call_provider_routed(ctx, enabled=auto_routing)
-                try:
-                    async for event in agen:
+                async with aclosing(_merge_agent_events(agen, event_queue)) as merged:
+                    async for event in merged:
                         if await request.is_disconnected():
                             # 客户端断开：取消上游，但仍保存已累积内容
                             disconnected = True
@@ -219,8 +308,6 @@ async def chat_stream(
                             continue
                         # 事件本身已是 {"type": "chunk"|"modelSwitch", ...}
                         yield _sse(event)
-                finally:
-                    await agen.aclose()
 
                 message = await pipeline.persist(ctx)
                 # 后台记忆提取：不 await，失败在任务内部自行记日志；
@@ -250,14 +337,75 @@ async def chat_stream(
                         }
                     )
             except PipelineError as exc:
-                await pipeline.persist(ctx)  # 出错前的部分内容也保存
+                logger.exception(
+                    "Chat pipeline failed: conversation_id=%s",
+                    conversation_id,
+                )
+                await _persist_safely(pipeline, ctx)
                 yield _sse({"type": "error", "message": str(exc)})
-            except Exception:
-                await pipeline.persist(ctx)
-                yield _sse({"type": "error", "message": "服务器内部错误，请稍后重试"})
+            except Exception as exc:
+                logger.exception(
+                    "Unexpected chat stream failure: conversation_id=%s",
+                    conversation_id,
+                )
+                await _persist_safely(pipeline, ctx)
+                # 前端直接展示 error 事件的 message，此处拼接简短异常摘要便于定位
+                summary = f"{exc.__class__.__name__}: {exc}".strip(": ")[:200]
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": f"服务器内部错误，请稍后重试（{summary}）",
+                    }
+                )
+            finally:
+                event_bus.unsubscribe(conversation_id, event_queue)
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@computer_use_router.post("/api/tools/confirm/{confirmation_id}")
+async def confirm_action(
+    confirmation_id: str,
+    body: dict,
+    _user_id: str = Depends(get_current_user_id),
+):
+    """Confirm or deny a pending computer use action."""
+    from app.modules.tools.permissions import resolve_confirmation
+
+    approved = body.get("approved", False)
+    reason = body.get("reason", "")
+    found = resolve_confirmation(confirmation_id, approved, reason)
+    if not found:
+        raise HTTPException(
+            status_code=404, detail="Confirmation not found or expired"
+        )
+    return {"status": "ok"}
+
+
+@computer_use_router.get("/api/audit/computer-use")
+async def get_computer_use_audit(
+    conversation_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    _user_id: str = Depends(get_current_user_id),
+):
+    """Return recent computer use audit entries."""
+    from app.modules.tools.audit import get_audit_log
+
+    entries = await get_audit_log(conversation_id, limit, offset)
+    return [
+        {
+            "id": entry.id,
+            "conversation_id": entry.conversation_id,
+            "timestamp": entry.timestamp.isoformat(),
+            "action": entry.action,
+            "confirmation_status": entry.confirmation_status,
+            "result_summary": entry.result_summary,
+            "duration_ms": entry.duration_ms,
+        }
+        for entry in entries
+    ]

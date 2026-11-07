@@ -11,13 +11,41 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 工具 handler 类型：接收管线上下文与模型给出的参数，返回文本结果
-ToolHandler = Callable[[Any, dict[str, Any]], Awaitable[str]]
+
+@dataclass
+class ToolResultPart:
+    """A single part of a multimodal tool result."""
+
+    type: str
+    content: str
+    mime_type: str = ""
+
+
+@dataclass
+class ToolResult:
+    """Structured multimodal tool result supporting text and images."""
+
+    parts: list[ToolResultPart]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def text_content(self) -> str:
+        """Get concatenated text parts only."""
+        return "\n".join(part.content for part in self.parts if part.type == "text")
+
+    def has_images(self) -> bool:
+        return any(part.type == "image" for part in self.parts)
+
+    def image_parts(self) -> list[ToolResultPart]:
+        return [part for part in self.parts if part.type == "image"]
+
+
+# 工具 handler 类型：接收管线上下文与模型给出的参数，返回文本或多模态结果
+ToolHandler = Callable[[Any, dict[str, Any]], Awaitable[str | ToolResult]]
 
 
 @dataclass(frozen=True)
@@ -31,6 +59,9 @@ class Tool:
     handler: ToolHandler
     # 分级超时（秒）：快工具 15 / 联网搜索 30 / 制作 PPT 300
     timeout: float = 15.0
+    execution_mode: str = "parallel"
+    cacheable: bool = True
+    result_type: str = "text"
 
 
 class ToolRegistry:
@@ -47,7 +78,19 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         self._openai_cache = None
 
+    def unregister(self, name: str) -> bool:
+        """取消注册工具；返回该工具是否原本存在。"""
+        if name not in self._tools:
+            return False
+        del self._tools[name]
+        self._openai_cache = None
+        return True
+
     def get(self, name: str) -> Tool | None:
+        return self._tools.get(name)
+
+    def get_tool(self, name: str) -> Tool | None:
+        """Get a tool by name."""
         return self._tools.get(name)
 
     def names(self) -> list[str]:
@@ -75,23 +118,33 @@ class ToolRegistry:
             t for t in self._openai_cache if t["function"]["name"] not in exclude
         ]
 
-    async def execute(self, ctx: Any, name: str, arguments: dict[str, Any]) -> str:
-        """执行工具并保证返回字符串；任何异常都转成可读文本，绝不抛出。"""
+    async def execute(
+        self, ctx: Any, name: str, arguments: dict[str, Any]
+    ) -> ToolResult:
+        """执行工具并统一返回结构化结果；任何异常都转成可读文本。"""
+
+        def text_result(content: str) -> ToolResult:
+            return ToolResult(parts=[ToolResultPart(type="text", content=content)])
+
         tool = self._tools.get(name)
         if tool is None:
             logger.warning("模型请求了未注册的工具：%s", name)
-            return f"工具 {name} 不存在，请改用其他工具或直接回答。"
+            return text_result(f"工具 {name} 不存在，请改用其他工具或直接回答。")
         try:
             result = await asyncio.wait_for(
                 tool.handler(ctx, arguments or {}), timeout=tool.timeout
             )
-            return str(result)
+            if isinstance(result, ToolResult):
+                return result
+            return text_result(result if isinstance(result, str) else str(result))
         except asyncio.TimeoutError:
             logger.warning("工具 %s 执行超时（%.0fs）", name, tool.timeout)
-            return f"工具 {name} 执行超时，请基于已有信息直接回答。"
+            return text_result(f"工具 {name} 执行超时，请基于已有信息直接回答。")
         except Exception as exc:
             logger.warning("工具 %s 执行异常：%s", name, exc, exc_info=True)
-            return f"工具 {name} 执行失败：{exc.__class__.__name__}。请基于已有信息直接回答。"
+            return text_result(
+                f"工具 {name} 执行失败：{exc.__class__.__name__}。请基于已有信息直接回答。"
+            )
 
 
 _registry = ToolRegistry()
@@ -107,6 +160,9 @@ def tool(
     description: str,
     parameters: dict[str, Any],
     timeout: float = 15.0,
+    execution_mode: str = "parallel",
+    cacheable: bool = True,
+    result_type: str = "text",
 ) -> Callable[[ToolHandler], ToolHandler]:
     """装饰器：把异步函数注册为工具。
 
@@ -124,6 +180,9 @@ def tool(
                 parameters=parameters,
                 handler=handler,
                 timeout=timeout,
+                execution_mode=execution_mode,
+                cacheable=cacheable,
+                result_type=result_type,
             )
         )
         return handler

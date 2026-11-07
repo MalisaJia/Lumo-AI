@@ -1,0 +1,16 @@
+.git
+**/.venv
+node_modules
+frontend
+desktop
+scripts
+backend/lumo.db*
+backend/uploads
+*.pptx
+*.png
+.vscode
+__pycache__
+*.pyc
+backend/build
+backend/dist
+backend/frontend_dist

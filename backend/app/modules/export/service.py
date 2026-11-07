@@ -42,6 +42,19 @@ _FONT_CANDIDATES: list[tuple[str, str | None]] = [
     ("simsun.ttc", None),  # 宋体
 ]
 
+# Linux 容器 CJK 字体候选（fonts-noto-cjk 包）
+_FONT_CANDIDATES_LINUX: list[tuple[str, str | None]] = [
+    ("NotoSansCJK-Regular.ttc", "NotoSansCJK-Bold.ttc"),
+    ("NotoSansCJKsc-Regular.otf", "NotoSansCJKsc-Bold.otf"),
+]
+
+# Linux 字体搜索目录（按优先级）
+_FONT_DIRS_LINUX: list[str] = [
+    "/usr/share/fonts/opentype/noto",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/local/share/fonts",
+]
+
 
 # ---------------------------------------------------------------- 通用辅助
 
@@ -102,6 +115,7 @@ def _message_sources(message: Message) -> list[dict]:
 
 def _find_cjk_fonts() -> tuple[str | None, str | None]:
     """在系统字体目录查找 CJK 字体，返回 (常规路径, 加粗路径或 None)。"""
+    # Windows: 原有逻辑不变
     fonts_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     for regular, bold in _FONT_CANDIDATES:
         reg_path = fonts_dir / regular
@@ -110,6 +124,20 @@ def _find_cjk_fonts() -> tuple[str | None, str | None]:
             return str(reg_path), (
                 str(bold_path) if bold_path and bold_path.is_file() else None
             )
+
+    # Linux: 搜索已知字体目录
+    for dir_str in _FONT_DIRS_LINUX:
+        linux_dir = Path(dir_str)
+        if not linux_dir.is_dir():
+            continue
+        for regular, bold in _FONT_CANDIDATES_LINUX:
+            reg_path = linux_dir / regular
+            if reg_path.is_file():
+                bold_path = linux_dir / bold if bold else None
+                return str(reg_path), (
+                    str(bold_path) if bold_path and bold_path.is_file() else None
+                )
+
     return None, None
 
 

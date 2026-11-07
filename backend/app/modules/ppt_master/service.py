@@ -29,7 +29,15 @@ logger = logging.getLogger(__name__)
 PPT_MASTER_HOME = Path(
     os.environ.get("PPT_MASTER_HOME") or str(BACKEND_DIR.parent / "ppt-master")
 )
-PPT_MASTER_PYTHON = PPT_MASTER_HOME / ".venv" / "Scripts" / "python.exe"
+PPT_MASTER_PYTHON = Path(
+    os.environ.get("PPT_MASTER_PYTHON")
+    or str(
+        PPT_MASTER_HOME
+        / ".venv"
+        / ("Scripts" if os.name == "nt" else "bin")
+        / ("python.exe" if os.name == "nt" else "python")
+    )
+)
 PPT_MASTER_SCRIPTS = PPT_MASTER_HOME / "skills" / "ppt-master" / "scripts"
 
 # 每个 PPT Master 子进程步骤的超时（秒）
