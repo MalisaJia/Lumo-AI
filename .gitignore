@@ -56,3 +56,20 @@ backend/_ppt_e2e_out.pptx
 test_export.pptx
 export_button_test.png
 export_menu_test.png
+
+# 本地外部代码备份目录（含数百 MB 二进制，禁止入库）
+claude-code-2.1.232-backup/
+
+# SQLite 伴生文件
+*.db-shm
+*.db-wal
+
+# 本地临时扫描脚本与产物
+scan*.ps1
+sketchup_scan.ps1
+gen_scans.js
+mkps.js
+enc_cmd.txt
+
+# 改造计划文档（仅本地留存）
+Lumo_Coding_Agent_改造计划.md
